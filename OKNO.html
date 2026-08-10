@@ -1,372 +1,2605 @@
+<?php
+// index.php - Главный файл с маршрутизацией и логикой
+
+session_start();
+
+// Простая имитация базы данных (в реальном проекте - MySQL)
+$dataFile = __DIR__ . '/data.json';
+if (!file_exists($dataFile)) {
+    $defaultData = [
+        'tutor' => [
+            'work_start' => '09:00',
+            'work_end' => '21:00',
+            'break_default' => 10,
+            'events' => [],
+            'students' => [],
+            'services' => [
+                ['id' => 1, 'name' => 'Английский язык', 'duration' => 60, 'price' => 1500, 'break_after' => 10],
+                ['id' => 2, 'name' => 'Математика', 'duration' => 90, 'price' => 2000, 'break_after' => 15]
+            ],
+            'current_week_offset' => 0,
+            'work_schedule' => [
+                'monday' => ['active' => true, 'start' => '09:00', 'end' => '21:00'],
+                'tuesday' => ['active' => true, 'start' => '09:00', 'end' => '21:00'],
+                'wednesday' => ['active' => true, 'start' => '09:00', 'end' => '21:00'],
+                'thursday' => ['active' => true, 'start' => '09:00', 'end' => '21:00'],
+                'friday' => ['active' => true, 'start' => '09:00', 'end' => '21:00'],
+                'saturday' => ['active' => false, 'start' => '09:00', 'end' => '18:00'],
+                'sunday' => ['active' => false, 'start' => '09:00', 'end' => '18:00']
+            ],
+            'week_schedules' => [] // Хранилище понедельных расписаний
+        ]
+    ];
+    file_put_contents($dataFile, json_encode($defaultData, JSON_PRETTY_PRINT));
+}
+
+$data = json_decode(file_get_contents($dataFile), true);
+
+// Функции для работы с данными
+function saveData($data) {
+    global $dataFile;
+    file_put_contents($dataFile, json_encode($data, JSON_PRETTY_PRINT));
+}
+
+// Получить дни недели с учетом смещения
+function getWeekDays($offset = 0) {
+    $today = new DateTime();
+    $today->modify('monday this week');
+    if ($offset != 0) {
+        $today->modify(($offset * 7) . ' days');
+    }
+    $week = [];
+    for ($i = 0; $i < 7; $i++) {
+        $week[] = clone $today;
+        $today->modify('+1 day');
+    }
+    return $week;
+}
+
+// Получить название дня недели на английском
+function getDayName($date) {
+    $days = ['Mon' => 'monday', 'Tue' => 'tuesday', 'Wed' => 'wednesday', 'Thu' => 'thursday', 'Fri' => 'friday', 'Sat' => 'saturday', 'Sun' => 'sunday'];
+    return $days[$date->format('D')];
+}
+
+// Получить название недели в формате "Месяц (дд.мм - дд.мм)" или "Месяц1 (дд.мм - дд.мм) Месяц2"
+function getWeekTitle($weekDays) {
+    $months = [
+        1 => 'Январь', 2 => 'Февраль', 3 => 'Март', 4 => 'Апрель',
+        5 => 'Май', 6 => 'Июнь', 7 => 'Июль', 8 => 'Август',
+        9 => 'Сентябрь', 10 => 'Октябрь', 11 => 'Ноябрь', 12 => 'Декабрь'
+    ];
+    $first = $weekDays[0];
+    $last  = $weekDays[6];
+    $firstMonth = (int)$first->format('n');
+    $lastMonth  = (int)$last->format('n');
+    $firstYear  = (int)$first->format('Y');
+    $lastYear   = (int)$last->format('Y');
+
+    if ($firstMonth == $lastMonth && $firstYear == $lastYear) {
+        // Один месяц
+        return $months[$firstMonth] . ' (' . $first->format('d.m') . ' - ' . $last->format('d.m') . ')';
+    } else {
+        // Два месяца
+        return $months[$firstMonth] . ' (' . $first->format('d.m') . ' - ' . $last->format('d.m') . ') ' . $months[$lastMonth];
+    }
+}
+
+// Получить рабочие часы для конкретной даты (с учетом понедельного расписания)
+function getWorkHoursForDate($date, $data) {
+    $dayName = getDayName($date);
+    // Вычисляем понедельник недели
+    $monday = clone $date;
+    $monday->modify('monday this week');
+    $mondayStr = $monday->format('Y-m-d');
+    
+    // Проверяем, есть ли расписание для этой недели
+    if (isset($data['tutor']['week_schedules'][$mondayStr]) && isset($data['tutor']['week_schedules'][$mondayStr][$dayName])) {
+        $schedule = $data['tutor']['week_schedules'][$mondayStr][$dayName];
+    } else {
+        // Иначе используем глобальное (запасное)
+        $schedule = $data['tutor']['work_schedule'][$dayName] ?? ['active' => true, 'start' => '09:00', 'end' => '21:00'];
+    }
+    
+    if (!$schedule['active']) {
+        return null;
+    }
+    return ['start' => $schedule['start'], 'end' => $schedule['end']];
+}
+
+// Получить события для дня
+function getEventsForDay($date, $data) {
+    $events = [];
+    foreach ($data['tutor']['events'] as $event) {
+        if ($event['date'] == $date) {
+            $events[] = $event;
+        }
+    }
+    usort($events, function($a, $b) {
+        return strcmp($a['start'], $b['start']);
+    });
+    return $events;
+}
+
+// Проверить пересечение интервалов
+function hasIntersection($date, $start, $end, $excludeId = null) {
+    global $data;
+    $startTime = DateTime::createFromFormat('H:i', $start);
+    $endTime = DateTime::createFromFormat('H:i', $end);
+    
+    foreach ($data['tutor']['events'] as $event) {
+        if ($event['date'] == $date && ($excludeId === null || $event['id'] != $excludeId)) {
+            $eventStart = DateTime::createFromFormat('H:i', $event['start']);
+            $eventEnd = DateTime::createFromFormat('H:i', $event['end']);
+            
+            if ($startTime < $eventEnd && $endTime > $eventStart) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Получить свободные слоты для ученика (с учетом длительности услуги)
+function getFreeSlotsForStudent($date, $data, $duration = 60, $breakAfter = 0) {
+    $workHours = getWorkHoursForDate(DateTime::createFromFormat('Y-m-d', $date), $data);
+    if (!$workHours) {
+        return [];
+    }
+    
+    $events = getEventsForDay($date, $data);
+    $freeSlots = [];
+    $current = DateTime::createFromFormat('H:i', $workHours['start']);
+    $end = DateTime::createFromFormat('H:i', $workHours['end']);
+    $totalDuration = $duration + $breakAfter;
+    
+    foreach ($events as $event) {
+        $eventStart = DateTime::createFromFormat('H:i', $event['start']);
+        $eventEnd = DateTime::createFromFormat('H:i', $event['end']);
+        
+        while ($current < $eventStart) {
+            $slotEnd = clone $current;
+            $slotEnd->modify('+' . $totalDuration . ' minutes');
+            if ($slotEnd <= $eventStart) {
+                $freeSlots[] = [
+                    'start' => $current->format('H:i'),
+                    'end' => $slotEnd->format('H:i')
+                ];
+                $current = $slotEnd;
+            } else {
+                break;
+            }
+        }
+        if ($current < $eventEnd) {
+            $current = $eventEnd;
+        }
+    }
+    
+    while ($current < $end) {
+        $slotEnd = clone $current;
+        $slotEnd->modify('+' . $totalDuration . ' minutes');
+        if ($slotEnd <= $end) {
+            $freeSlots[] = [
+                'start' => $current->format('H:i'),
+                'end' => $slotEnd->format('H:i')
+            ];
+            $current = $slotEnd;
+        } else {
+            break;
+        }
+    }
+    
+    return $freeSlots;
+}
+
+// Обработка действий
+$page = isset($_GET['action']) ? $_GET['action'] : 'calendar';
+$subpage = isset($_GET['sub']) ? $_GET['sub'] : '';
+
+// Обработка GET запросов (AJAX) - должны быть до рендеринга
+if ($page === 'get_free_slots' && isset($_GET['date'])) {
+    $date = $_GET['date'];
+    $duration = intval($_GET['duration'] ?? 60);
+    $breakAfter = intval($_GET['break'] ?? 0);
+    $studentId = $_GET['student_id'] ?? null;
+    
+    $workHours = getWorkHoursForDate(DateTime::createFromFormat('Y-m-d', $date), $data);
+    
+    if (!$workHours) {
+        echo json_encode(['error' => 'Выходной день']);
+        exit;
+    }
+    
+    $events = getEventsForDay($date, $data);
+    $slots = [];
+    $current = DateTime::createFromFormat('H:i', $workHours['start']);
+    $end = DateTime::createFromFormat('H:i', $workHours['end']);
+    $totalDuration = $duration + $breakAfter;
+    
+    $eventData = [];
+    foreach ($events as $event) {
+        $eventStart = DateTime::createFromFormat('H:i', $event['start']);
+        $eventEnd = DateTime::createFromFormat('H:i', $event['end']);
+        $isStudentLesson = ($studentId && $event['student_id'] === $studentId);
+        $eventData[] = [
+            'start' => $eventStart,
+            'end' => $eventEnd,
+            'is_student' => $isStudentLesson,
+            'event' => $event
+        ];
+    }
+    
+    usort($eventData, function($a, $b) {
+        return $a['start']->getTimestamp() - $b['start']->getTimestamp();
+    });
+    
+    foreach ($eventData as $item) {
+        $eventStart = $item['start'];
+        $eventEnd = $item['end'];
+        
+        while ($current < $eventStart) {
+            $slotEnd = clone $current;
+            $slotEnd->modify('+' . $totalDuration . ' minutes');
+            if ($slotEnd <= $eventStart) {
+                $slots[] = [
+                    'start' => $current->format('H:i'),
+                    'end' => $slotEnd->format('H:i'),
+                    'type' => 'free'
+                ];
+                $current = $slotEnd;
+            } else {
+                break;
+            }
+        }
+        
+        if ($item['is_student']) {
+            $slots[] = [
+                'start' => $eventStart->format('H:i'),
+                'end' => $eventEnd->format('H:i'),
+                'type' => 'my_lesson',
+                'event' => $item['event']
+            ];
+        } else {
+            $slots[] = [
+                'start' => $eventStart->format('H:i'),
+                'end' => $eventEnd->format('H:i'),
+                'type' => 'busy'
+            ];
+        }
+        
+        if ($current < $eventEnd) {
+            $current = $eventEnd;
+        }
+    }
+    
+    while ($current < $end) {
+        $slotEnd = clone $current;
+        $slotEnd->modify('+' . $totalDuration . ' minutes');
+        if ($slotEnd <= $end) {
+            $slots[] = [
+                'start' => $current->format('H:i'),
+                'end' => $slotEnd->format('H:i'),
+                'type' => 'free'
+            ];
+            $current = $slotEnd;
+        } else {
+            break;
+        }
+    }
+    
+    header('Content-Type: application/json');
+    echo json_encode(['slots' => $slots]);
+    exit;
+}
+
+// Обработка POST запросов
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_POST['action'])) {
+        switch ($_POST['action']) {
+            case 'save_schedule':
+                $weekOffset = intval($_POST['week_offset'] ?? 0);
+                $weekDays = getWeekDays($weekOffset);
+                $mondayStr = $weekDays[0]->format('Y-m-d');
+                
+                $schedule = [];
+                $days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+                foreach ($days as $day) {
+                    $schedule[$day] = [
+                        'active' => isset($_POST[$day . '_active']) && $_POST[$day . '_active'] === 'on',
+                        'start' => $_POST[$day . '_start'] ?? '09:00',
+                        'end' => $_POST[$day . '_end'] ?? '21:00'
+                    ];
+                }
+                // Сохраняем в week_schedules для конкретной недели
+                $data['tutor']['week_schedules'][$mondayStr] = $schedule;
+                saveData($data);
+                $_SESSION['message'] = "График работы для недели {$mondayStr} сохранен";
+                header('Location: ?action=settings&week=' . $weekOffset);
+                exit;
+                
+            case 'close_interval':
+                $date = $_POST['date'];
+                $start = $_POST['start_time'];
+                $end = $_POST['end_time'];
+                $note = $_POST['note'] ?? 'Занято';
+                
+                $startTime = DateTime::createFromFormat('H:i', $start);
+                $endTime = DateTime::createFromFormat('H:i', $end);
+                
+                if ($startTime && $endTime && $startTime < $endTime) {
+                    if (!hasIntersection($date, $start, $end)) {
+                        $data['tutor']['events'][] = [
+                            'id' => 'event_' . uniqid(),
+                            'date' => $date,
+                            'start' => $start,
+                            'end' => $end,
+                            'type' => 'busy',
+                            'student_id' => null,
+                            'service_id' => null,
+                            'status' => 'closed',
+                            'paid' => false,
+                            'break_after' => 0,
+                            'note' => $note,
+                            'created_by' => 'tutor'
+                        ];
+                        saveData($data);
+                        $_SESSION['message'] = "Интервал {$start} - {$end} закрыт: {$note}";
+                    } else {
+                        $_SESSION['error'] = "Этот интервал пересекается с существующими событиями";
+                    }
+                } else {
+                    $_SESSION['error'] = "Некорректное время";
+                }
+                
+                header('Location: ?action=calendar&week=' . ($_GET['week'] ?? 0));
+                exit;
+                
+            case 'create_lesson':
+                $date = $_POST['date'];
+                $start = $_POST['start_time'];
+                $end = $_POST['end_time'];
+                $studentId = $_POST['student_id'];
+                $serviceId = intval($_POST['service_id']);
+                $breakAfter = intval($_POST['break_after'] ?? 0);
+                $note = $_POST['note'] ?? '';
+                $createdBy = $_POST['created_by'] ?? 'tutor';
+                
+                $startTime = DateTime::createFromFormat('H:i', $start);
+                $endTime = DateTime::createFromFormat('H:i', $end);
+                
+                if ($startTime && $endTime && $startTime < $endTime) {
+                    if (!hasIntersection($date, $start, $end)) {
+                        $service = null;
+foreach ($data['tutor']['services'] as $s) {
+    if ($s['id'] == $serviceId) {
+        $service = $s;
+        break;
+    }
+}
+$studentPrices = $data['tutor']['students'][$studentId]['student_prices'] ?? [];
+$price = $studentPrices[$serviceId] ?? ($service ? $service['price'] : 0);
+
+$event = [
+    'id' => 'event_' . uniqid(),
+    'date' => $date,
+    'start' => $start,
+    'end' => $end,
+    'type' => 'lesson',
+    'student_id' => $studentId,
+    'service_id' => $serviceId,
+    'status' => 'booked',
+    'paid' => false,
+    'break_after' => $breakAfter,
+    'note' => $note,
+    'created_by' => $createdBy,
+    'price' => $price
+];
+                        
+                        $data['tutor']['events'][] = $event;
+                        
+                        if ($service && isset($data['tutor']['students'][$studentId])) {
+                            if (!isset($data['tutor']['students'][$studentId]['records'])) {
+                                $data['tutor']['students'][$studentId]['records'] = [];
+                            }
+                            $data['tutor']['students'][$studentId]['records'][] = [
+                                'event_id' => $event['id'],
+                                'date' => $date,
+                                'start' => $start,
+                                'end' => $end,
+                                'service' => $service['name'],
+                                'duration' => $service['duration'],
+                                'price' => $price,
+                                'status' => 'booked',
+                                'paid' => false,
+                                'break_after' => $breakAfter,
+                                'created_by' => $createdBy
+                            ];
+                        }
+                        
+                        saveData($data);
+                        $_SESSION['message'] = $createdBy === 'student' ? "Вы успешно записались на урок!" : "Урок создан: {$start} - {$end}";
+                    } else {
+                        $_SESSION['error'] = "Этот интервал пересекается с существующими событиями";
+                    }
+                } else {
+                    $_SESSION['error'] = "Некорректное время";
+                }
+                
+                if ($createdBy === 'student') {
+                    header('Location: ?action=student_view&id=' . $studentId);
+                } else {
+                    header('Location: ?action=calendar&week=' . ($_GET['week'] ?? 0));
+                }
+                exit;
+                
+            case 'edit_lesson':
+                $eventId = $_POST['event_id'];
+                $date = $_POST['date'];
+                $start = $_POST['start_time'];
+                $end = $_POST['end_time'];
+                $studentId = $_POST['student_id'];
+                $serviceId = intval($_POST['service_id']);
+                $breakAfter = intval($_POST['break_after'] ?? 0);
+                $status = $_POST['status'];
+                $note = $_POST['note'] ?? '';
+                $userEditedBreak = isset($_POST['user_edited_break']) && $_POST['user_edited_break'] === 'true';
+                
+                $startTime = DateTime::createFromFormat('H:i', $start);
+                $endTime = DateTime::createFromFormat('H:i', $end);
+                
+                if ($startTime && $endTime && $startTime < $endTime) {
+                    if (!hasIntersection($date, $start, $end, $eventId)) {
+                        foreach ($data['tutor']['events'] as &$event) {
+                            if ($event['id'] == $eventId) {
+                                $event['date'] = $date;
+                                $event['start'] = $start;
+                                $event['end'] = $end;
+                                $event['student_id'] = $studentId;
+                                $event['service_id'] = $serviceId;
+                                if ($userEditedBreak) {
+                                    $event['break_after'] = $breakAfter;
+                                } else {
+                                    $service = null;
+                                    foreach ($data['tutor']['services'] as $s) {
+                                        if ($s['id'] == $serviceId) {
+                                            $service = $s;
+                                            break;
+                                        }
+                                    }
+                                    $event['break_after'] = $service ? $service['break_after'] : 0;
+                                }
+                                $event['status'] = $status;
+                                $event['note'] = $note;
+                                break;
+                            }
+                        }
+                        
+                        if ($studentId && isset($data['tutor']['students'][$studentId])) {
+                            $service = null;
+                            foreach ($data['tutor']['services'] as $s) {
+                                if ($s['id'] == $serviceId) {
+                                    $service = $s;
+                                    break;
+                                }
+                            }
+                            
+                            foreach ($data['tutor']['students'] as &$student) {
+                                if (isset($student['records'])) {
+                                    foreach ($student['records'] as &$record) {
+                                        if ($record['event_id'] == $eventId) {
+                                            $record['date'] = $date;
+                                            $record['start'] = $start;
+                                            $record['end'] = $end;
+                                            $record['service'] = $service ? $service['name'] : '';
+                                            $record['duration'] = $service ? $service['duration'] : 0;
+                                            $record['price'] = $service ? $service['price'] : 0;
+                                            $record['status'] = $status;
+                                            if ($userEditedBreak) {
+                                                $record['break_after'] = $breakAfter;
+                                            } else {
+                                                $record['break_after'] = $service ? $service['break_after'] : 0;
+                                            }
+                                            break 2;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        saveData($data);
+                        $_SESSION['message'] = "Урок обновлен";
+                    } else {
+                        $_SESSION['error'] = "Этот интервал пересекается с существующими событиями";
+                    }
+                } else {
+                    $_SESSION['error'] = "Некорректное время";
+                }
+                
+                header('Location: ?action=calendar&week=' . ($_GET['week'] ?? 0));
+                exit;
+                
+            case 'delete_event':
+                $eventId = $_POST['event_id'];
+                
+                foreach ($data['tutor']['events'] as $key => $event) {
+                    if ($event['id'] == $eventId) {
+                        foreach ($data['tutor']['students'] as &$student) {
+                            if (isset($student['records'])) {
+                                foreach ($student['records'] as $rk => $record) {
+                                    if ($record['event_id'] == $eventId) {
+                                        unset($student['records'][$rk]);
+                                        $student['records'] = array_values($student['records']);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        unset($data['tutor']['events'][$key]);
+                        $data['tutor']['events'] = array_values($data['tutor']['events']);
+                        break;
+                    }
+                }
+                
+                saveData($data);
+                $_SESSION['message'] = "Событие удалено";
+                header('Location: ?action=calendar&week=' . ($_GET['week'] ?? 0));
+                exit;
+                
+            case 'toggle_paid':
+                $eventId = $_POST['event_id'];
+                $paid = $_POST['paid'] === 'true';
+                
+                foreach ($data['tutor']['events'] as &$event) {
+                    if ($event['id'] == $eventId) {
+                        $event['paid'] = $paid;
+                        
+                        if ($event['student_id'] && isset($data['tutor']['students'][$event['student_id']])) {
+                            foreach ($data['tutor']['students'][$event['student_id']]['records'] as &$record) {
+                                if ($record['event_id'] == $eventId) {
+                                    $record['paid'] = $paid;
+                                    if ($paid) {
+                                        $record['status'] = 'completed';
+                                        $data['tutor']['students'][$event['student_id']]['balance'] -= $record['price'];
+                                    } else {
+                                        $record['status'] = 'booked';
+                                        $data['tutor']['students'][$event['student_id']]['balance'] += $record['price'];
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                saveData($data);
+                
+                $referrer = $_SERVER['HTTP_REFERER'] ?? '?action=calendar';
+                header('Location: ' . $referrer);
+                exit;
+                
+            case 'open_day':
+                $date = $_POST['date'];
+                foreach ($data['tutor']['events'] as $key => $event) {
+                    if ($event['date'] == $date && $event['type'] == 'busy') {
+                        unset($data['tutor']['events'][$key]);
+                    }
+                }
+                $data['tutor']['events'] = array_values($data['tutor']['events']);
+                saveData($data);
+                $_SESSION['message'] = "День открыт для записи";
+                header('Location: ?action=calendar&week=' . ($_GET['week'] ?? 0));
+                exit;
+                
+            case 'add_service':
+                $data['tutor']['services'][] = [
+                    'id' => count($data['tutor']['services']) + 1,
+                    'name' => $_POST['name'],
+                    'duration' => intval($_POST['duration']),
+                    'price' => intval($_POST['price']),
+                    'break_after' => intval($_POST['break_after'])
+                ];
+                saveData($data);
+                $_SESSION['message'] = "Услуга добавлена";
+                header('Location: ?action=services');
+                exit;
+                
+            case 'edit_service':
+                $serviceId = intval($_POST['service_id']);
+                foreach ($data['tutor']['services'] as &$service) {
+                    if ($service['id'] == $serviceId) {
+                        $service['name'] = $_POST['name'];
+                        $service['duration'] = intval($_POST['duration']);
+                        $service['price'] = intval($_POST['price']);
+                        $service['break_after'] = intval($_POST['break_after']);
+                        break;
+                    }
+                }
+                saveData($data);
+                $_SESSION['message'] = "Услуга обновлена";
+                header('Location: ?action=services');
+                exit;
+                
+            case 'delete_service':
+                $serviceId = intval($_POST['service_id']);
+                foreach ($data['tutor']['services'] as $key => $service) {
+                    if ($service['id'] == $serviceId) {
+                        unset($data['tutor']['services'][$key]);
+                        break;
+                    }
+                }
+                $data['tutor']['services'] = array_values($data['tutor']['services']);
+                saveData($data);
+                $_SESSION['message'] = "Услуга удалена";
+                header('Location: ?action=services');
+                exit;
+                
+            case 'update_student':
+                $studentId = $_POST['student_id'];
+                $data['tutor']['students'][$studentId]['name'] = $_POST['name'];
+$data['tutor']['students'][$studentId]['phone'] = $_POST['phone'];
+$data['tutor']['students'][$studentId]['price_per_hour'] = intval($_POST['price_per_hour'] ?? 1500);
+$data['tutor']['students'][$studentId]['discount'] = intval($_POST['discount'] ?? 0);
+
+// Сохраняем индивидуальные цены
+$prices = [];
+foreach ($data['tutor']['services'] as $s) {
+    $key = 'price_' . $s['id'];
+    if (isset($_POST[$key]) && $_POST[$key] !== '') {
+        $prices[$s['id']] = floatval($_POST[$key]);
+    }
+}
+$data['tutor']['students'][$studentId]['student_prices'] = $prices;
+saveData($data);
+                header('Location: ?action=students&sub=view&student_id=' . $studentId);
+                exit;
+                
+            case 'update_balance':
+                $studentId = $_POST['student_id'];
+                $amount = floatval($_POST['amount']);
+                $operation = $_POST['operation'];
+                
+                if ($operation === 'add') {
+                    $data['tutor']['students'][$studentId]['balance'] += $amount;
+                } elseif ($operation === 'subtract') {
+                    $data['tutor']['students'][$studentId]['balance'] -= $amount;
+                }
+                saveData($data);
+                header('Location: ?action=students&sub=view&student_id=' . $studentId);
+                exit;
+                
+            case 'add_student':
+                $id = 'student_' . uniqid();
+                $data['tutor']['students'][$id] = [
+    'id' => $id,
+    'name' => $_POST['name'],
+    'phone' => $_POST['phone'],
+    'balance' => floatval($_POST['balance'] ?? 0),
+    'discount' => intval($_POST['discount'] ?? 0),
+    'price_per_hour' => intval($_POST['price_per_hour'] ?? 1500),
+    'student_prices' => [],
+    'records' => []
+];
+                saveData($data);
+                header('Location: ?action=students');
+                exit;
+                
+            case 'delete_student':
+                $studentId = $_POST['student_id'];
+                if (isset($data['tutor']['students'][$studentId])) {
+                    unset($data['tutor']['students'][$studentId]);
+                    saveData($data);
+                }
+                header('Location: ?action=students');
+                exit;
+                
+            case 'change_week':
+                $newOffset = intval($_POST['week_offset']);
+                $data['tutor']['current_week_offset'] = $newOffset;
+                saveData($data);
+                header('Location: ?action=calendar&week=' . $newOffset);
+                exit;
+                
+            case 'get_event':
+                $eventId = $_POST['id'];
+                $eventData = null;
+                foreach ($data['tutor']['events'] as $event) {
+                    if ($event['id'] == $eventId) {
+                        $eventData = $event;
+                        break;
+                    }
+                }
+                header('Content-Type: application/json');
+                echo json_encode($eventData);
+                exit;
+        }
+    }
+}
+
+// Обработка GET запросов (AJAX) для события
+if ($page === 'get_event' && isset($_GET['id'])) {
+    $eventId = $_GET['id'];
+    $eventData = null;
+    foreach ($data['tutor']['events'] as $event) {
+        if ($event['id'] == $eventId) {
+            $eventData = $event;
+            break;
+        }
+    }
+    header('Content-Type: application/json');
+    echo json_encode($eventData);
+    exit;
+}
+
+// Получаем текущее смещение недели
+$weekOffset = isset($_GET['week']) ? intval($_GET['week']) : ($data['tutor']['current_week_offset'] ?? 0);
+$weekDays = getWeekDays($weekOffset);
+$today = new DateTime();
+$currentDayStr = $today->format('Y-m-d');
+
+// Получаем ID ученика для просмотра
+$viewStudentId = isset($_GET['student_id']) ? $_GET['student_id'] : null;
+
+// Сообщения
+$message = isset($_SESSION['message']) ? $_SESSION['message'] : null;
+$error = isset($_SESSION['error']) ? $_SESSION['error'] : null;
+unset($_SESSION['message'], $_SESSION['error']);
+
+// Полный URL сайта для генерации ссылок
+$siteUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://$_SERVER[HTTP_HOST]";
+$scriptName = $_SERVER['SCRIPT_NAME'];
+?>
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Игральный кубик — вид сверху</title>
-  <style>
-    body {
-      margin: 0;
-      overflow: hidden;
-      background-color: #1a1a2e;
-      cursor: pointer;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-    }
-    #info {
-      position: absolute;
-      bottom: 30px;
-      left: 0;
-      width: 100%;
-      text-align: center;
-      color: rgba(255, 255, 255, 0.3);
-      font-size: 16px;
-      pointer-events: none;
-      user-select: none;
-      font-family: Arial, sans-serif;
-      letter-spacing: 1px;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OKNO</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@400;700&display=swap');
+
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        body { background: #f0f4f8; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+
+        .header { background: white; padding: 20px 30px; border-radius: 16px; margin-bottom: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; }
+        .header h1 { font-family: 'Unbounded', sans-serif; font-size: 32px; font-weight: 700; color: #1a2a3a; letter-spacing: 1px; }
+        .header .nav a { text-decoration: none; color: #4a6a8a; padding: 8px 18px; border-radius: 8px; margin: 0 4px; background: #f0f4f8; transition: 0.2s; }
+        .header .nav a:hover { background: #dce4ed; }
+        .header .nav a.active { background: #1a2a3a; color: white; }
+
+        .card { background: white; border-radius: 16px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 24px; }
+        .card-title { font-size: 20px; font-weight: 600; color: #1a2a3a; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+
+        .week-navigation { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px; }
+        .week-nav-btn { padding: 8px 20px; border: none; border-radius: 8px; background: #e2e8f0; cursor: pointer; font-weight: 500; transition: 0.2s; text-decoration: none; color: #1a2a3a; display: inline-block; }
+        .week-nav-btn:hover { background: #cbd5e1; }
+        .week-title { font-weight: 600; font-size: 18px; color: #1a2a3a; }
+
+        .form-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+        .form-row label { font-weight: 500; color: #2a3a4a; min-width: 120px; }
+        .form-row input, .form-row select, .form-row textarea { padding: 8px 12px; border: 1px solid #d1d9e6; border-radius: 8px; flex: 1; min-width: 150px; }
+        .form-row textarea { min-height: 60px; resize: vertical; }
+        .form-row input[type="time"] { min-width: 130px; }
+
+        .btn { padding: 8px 20px; border: none; border-radius: 8px; cursor: pointer; font-weight: 500; transition: 0.2s; }
+        .btn-primary { background: #1a2a3a; color: white; }
+        .btn-primary:hover { background: #2a4a6a; }
+        .btn-success { background: #22c55e; color: white; }
+        .btn-success:hover { background: #16a34a; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-sm { padding: 4px 12px; font-size: 12px; }
+        .btn-warning { background: #f59e0b; color: white; }
+        .btn-warning:hover { background: #d97706; }
+        .btn-secondary { background: #64748b; color: white; }
+        .btn-secondary:hover { background: #475569; }
+        .btn-outline { background: transparent; color: #3b82f6; border: 1px solid #3b82f6; }
+        .btn-outline:hover { background: #eff6ff; }
+        .btn-purple { background: #8b5cf6; color: white; }
+        .btn-purple:hover { background: #7c3aed; }
+        .btn-orange { background: #f97316; color: white; }
+        .btn-orange:hover { background: #ea580c; }
+        .btn-student { background: #8ba7e4; color: white; }
+        .btn-student:hover { background: #6d8fd4; }
+
+        .student-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; margin: 12px 0; }
+        .student-card { background: #f8fafc; padding: 12px 16px; border-radius: 12px; display: flex; justify-content: space-between; align-items: center; border: 1px solid #e2e8f0; }
+        .student-card .name { font-weight: 500; color: #1a2a3a; }
+        .student-card .phone { font-size: 12px; color: #64748b; }
+        .student-card .balance { font-size: 14px; color: #22c55e; font-weight: 600; }
+        .student-card .view-link { color: #3b82f6; text-decoration: none; font-weight: 500; }
+        .student-card .view-link:hover { text-decoration: underline; }
+
+        .records-table { width: 100%; border-collapse: collapse; }
+        .records-table th { text-align: left; padding: 8px 12px; background: #f1f5f9; font-weight: 500; color: #475569; }
+        .records-table td { padding: 8px 12px; border-bottom: 1px solid #e2e8f0; }
+        .records-table .paid { color: #22c55e; font-weight: 600; }
+        .records-table .unpaid { color: #ef4444; font-weight: 600; }
+
+        .service-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; background: #f8fafc; border-radius: 8px; margin-bottom: 8px; border: 1px solid #e2e8f0; }
+        .service-item .service-info { flex: 1; }
+        .service-item .service-actions { display: flex; gap: 4px; }
+
+        .modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 1000; }
+        .modal.active { display: flex; }
+        .modal-content { background: white; padding: 30px; border-radius: 16px; max-width: 600px; width: 90%; max-height: 85vh; overflow-y: auto; }
+        .modal-content .close-btn { float: right; background: none; border: none; font-size: 28px; cursor: pointer; color: #94a3b8; }
+        .modal-content .close-btn:hover { color: #1a2a3a; }
+
+        .balance-control { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 12px 0; padding: 16px; background: #f8fafc; border-radius: 12px; }
+        .balance-control input { width: 120px; padding: 8px; border: 1px solid #d1d9e6; border-radius: 8px; }
+
+        .inline-form { display: inline; }
+
+        .alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; }
+        .alert-success { background: #dcfce7; border: 1px solid #86efac; color: #166534; }
+        .alert-error { background: #fee2e2; border: 1px solid #fca5a5; color: #991b1b; }
+
+        .calendar-grid { display: flex; flex-direction: column; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; }
+        .calendar-header { display: grid; grid-template-columns: 60px repeat(7, 1fr); background: #f8fafc; border-bottom: 1px solid #e2e8f0; }
+        .day-header-cell { padding: 8px 4px; text-align: center; border-right: 1px solid #e2e8f0; position: relative; }
+        .day-header-cell:last-child { border-right: none; }
+        .day-header-cell.today { background: #eff6ff; }
+        .day-header-cell.non-working { background: #f1f5f9; opacity: 0.6; }
+        .day-header-cell .non-working-label { font-size: 9px; color: #94a3b8; display: block; margin-top: 2px; }
+        .day-name { font-size: 12px; font-weight: 600; color: #475569; }
+        .day-number { font-size: 16px; font-weight: 700; color: #1a2a3a; }
+        .day-header-cell.today .day-number { color: #3b82f6; }
+        .day-header-cell.non-working .day-number { color: #94a3b8; }
+
+        .calendar-body { display: flex; flex-direction: column; }
+        .time-row { display: grid; grid-template-columns: 60px repeat(7, 1fr); border-bottom: 1px solid #e2e8f0; min-height: 30px; }
+        .time-row:last-child { border-bottom: none; }
+        .time-label { padding: 2px 8px; font-size: 10px; color: #94a3b8; text-align: right; border-right: 1px solid #e2e8f0; background: #fafbfc; display: flex; align-items: center; justify-content: flex-end; }
+        .time-cell { border-right: 1px solid #e2e8f0; padding: 2px 4px; min-height: 30px; transition: background 0.15s; position: relative; }
+        .time-cell:last-child { border-right: none; }
+        .time-cell.free:hover { background: #f0fdf4; cursor: pointer; }
+        .time-cell.free:hover::after { content: '+ Создать урок'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 10px; color: #22c55e; font-weight: 500; background: white; padding: 2px 8px; border-radius: 4px; border: 1px solid #22c55e; white-space: nowrap; z-index: 10; }
+        .time-cell.busy { background: #fef2f2; opacity: 0.7; cursor: not-allowed; }
+        .time-cell.busy .busy-label { font-size: 9px; color: #dc2626; font-weight: 500; }
+        .time-cell.has-lesson { cursor: pointer; }
+        .time-cell.has-lesson:hover { opacity: 0.8; transform: scale(1.02); z-index: 1; }
+        .time-cell.non-working { background: #f1f5f9; opacity: 0.4; cursor: not-allowed; }
+        .time-cell.non-working .non-working-text { font-size: 9px; color: #94a3b8; }
+        .time-cell.outside-hours { background: #f8fafc; opacity: 0.3; cursor: not-allowed; }
+        .time-cell .lesson-content { width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; line-height: 1.2; text-align: center; font-size: 9px; }
+        .time-cell .lesson-content .lesson-name { font-size: 11px; font-weight: 700; }
+        .time-cell .lesson-content .lesson-time { font-size: 9px; }
+        .time-cell .lesson-content .lesson-service { font-size: 8px; opacity: 0.8; }
+        .time-cell .lesson-content .lesson-created-by { font-size: 7px; opacity: 0.6; margin-top: 1px; }
+
+        .time-cell.free-for-student { background: #defeb9; cursor: pointer; border: 1px solid #b8e08a; }
+        .time-cell.free-for-student:hover { background: #c8eea9; transform: scale(1.02); z-index: 1; }
+        .time-cell.free-for-student .free-label { font-size: 9px; color: #2a5a1a; font-weight: 500; text-align: center; }
+        .time-cell.busy-for-student { background: #e0e2df; opacity: 0.6; cursor: not-allowed; }
+        .time-cell.busy-for-student .busy-label { font-size: 8px; color: #6a6a6a; text-align: center; }
+
+        @media (max-width: 768px) {
+            .calendar-grid { font-size: 9px; }
+            .time-label { font-size: 8px; padding: 1px 4px; }
+            .time-row { min-height: 22px; }
+            .time-cell { min-height: 22px; }
+            .day-number { font-size: 11px; }
+            .time-cell .lesson-content .lesson-name { font-size: 9px; }
+            .time-cell .lesson-content .lesson-time { font-size: 7px; }
+            .time-cell .lesson-content .lesson-service { font-size: 7px; }
+        }
+
+        .schedule-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .schedule-day { background: #f8fafc; padding: 16px; border-radius: 12px; border: 1px solid #e2e8f0; }
+        .schedule-day .day-title { font-weight: 600; font-size: 16px; margin-bottom: 8px; color: #1a2a3a; }
+        .schedule-day .day-checkbox { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+        .schedule-day .day-checkbox input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+        .schedule-day .day-checkbox label { cursor: pointer; font-weight: 500; }
+        .schedule-day .day-time { display: flex; gap: 8px; align-items: center; }
+        .schedule-day .day-time input[type="time"] { padding: 6px 8px; border: 1px solid #d1d9e6; border-radius: 6px; width: 100px; }
+
+        .share-link-container { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: #f8fafc; padding: 12px 16px; border-radius: 8px; border: 1px solid #e2e8f0; margin-top: 8px; }
+        .share-link-container input { flex: 1; padding: 8px 12px; border: 1px solid #d1d9e6; border-radius: 6px; background: white; font-size: 13px; min-width: 200px; }
+
+        @media (max-width: 1024px) { .schedule-grid { grid-template-columns: 1fr 1fr; } }
+        @media (max-width: 600px) { .schedule-grid { grid-template-columns: 1fr; } .share-link-container { flex-direction: column; align-items: stretch; } }
+
+        .student-public-header { background: #f8fafc; padding: 20px; border-radius: 12px; text-align: center; margin-bottom: 20px; border: 1px solid #e2e8f0; }
+        .student-public-header h2 { color: #1a2a3a; margin-bottom: 4px; }
+        .student-public-header p { color: #64748b; font-size: 14px; }
+        .student-public-footer { text-align: center; margin-top: 20px; color: #94a3b8; font-size: 13px; }
+        .student-public-footer a { color: #3b82f6; text-decoration: none; }
+        .student-public-footer a:hover { text-decoration: underline; }
+        .student-public-table { width: 100%; border-collapse: collapse; }
+        .student-public-table th { text-align: left; padding: 10px 12px; background: #f1f5f9; font-weight: 600; color: #475569; }
+        .student-public-table td { padding: 10px 12px; border-bottom: 1px solid #e2e8f0; }
+        .student-public-table .status-paid { color: #22c55e; font-weight: 600; }
+        .student-public-table .status-unpaid { color: #ef4444; font-weight: 600; }
+        .student-booking-form { background: #f8fafc; padding: 20px; border-radius: 12px; border: 1px solid #e2e8f0; margin: 16px 0; }
+        .student-booking-form .form-row { margin-bottom: 12px; }
+        .student-booking-form .form-row label { min-width: 100px; }
+        input[type="time"].step5 { /* шаг 5 минут */ }
+        input[type="time"].step5::-webkit-datetime-edit { /* для WebKit */ }
+    </style>
 </head>
 <body>
-  <div id="info">Нажми на кубик или пробел</div>
+<div class="container">
 
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://unpkg.com/three@0.126.0/build/three.module.js"
-      }
-    }
-  </script>
+<div class="header">
+    <h1>OKNO</h1>
+    <div class="nav">
+        <?php if ($page === 'student_view'): ?>
+            <!-- Для ученика навигация скрыта -->
+        <?php else: ?>
+            <a href="?action=calendar&week=<?= $weekOffset ?>" class="<?= $page === 'calendar' ? 'active' : '' ?>">📅 Календарь</a>
+            <a href="?action=services" class="<?= $page === 'services' ? 'active' : '' ?>">📋 Услуги</a>
+            <a href="?action=students" class="<?= $page === 'students' ? 'active' : '' ?>">👥 Ученики</a>
+            <a href="?action=settings" class="<?= $page === 'settings' ? 'active' : '' ?>">⚙️ Настройки</a>
+        <?php endif; ?>
+    </div>
+</div>
 
-  <script type="module">
-    import * as THREE from 'three';
+<?php if ($message && $page !== 'student_view'): ?>
+<div class="alert alert-success"><?= $message ?></div>
+<?php endif; ?>
+<?php if ($error && $page !== 'student_view'): ?>
+<div class="alert alert-error"><?= $error ?></div>
+<?php endif; ?>
 
-    // --- СЦЕНА ---
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x1a1a2e);
-
-    // --- КАМЕРА (строго сверху) ---
-    const camera = new THREE.OrthographicCamera(-3, 3, 3, -3, 0.1, 10);
-    camera.position.set(0, 5, 0);
-    camera.lookAt(0, 0, 0);
-
-    // --- РЕНДЕРЕР ---
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    document.body.appendChild(renderer.domElement);
-
-    // --- ОСВЕЩЕНИЕ ---
-    const ambient = new THREE.AmbientLight(0x404060, 0.5);
-    scene.add(ambient);
-
-    const mainLight = new THREE.DirectionalLight(0xffeedd, 1.2);
-    mainLight.position.set(0, 5, 3);
-    mainLight.castShadow = true;
-    mainLight.shadow.mapSize.width = 512;
-    mainLight.shadow.mapSize.height = 512;
-    mainLight.shadow.camera.near = 0.1;
-    mainLight.shadow.camera.far = 10;
-    mainLight.shadow.camera.left = -3;
-    mainLight.shadow.camera.right = 3;
-    mainLight.shadow.camera.top = 3;
-    mainLight.shadow.camera.bottom = -3;
-    scene.add(mainLight);
-
-    const fillLight = new THREE.DirectionalLight(0x4488ff, 0.3);
-    fillLight.position.set(-2, 1, -2);
-    scene.add(fillLight);
-
-    // --- СОЗДАНИЕ ТЕКСТУР С ТОЧКАМИ ---
-    function createFaceTexture(dots) {
-      const canvas = document.createElement('canvas');
-      canvas.width = 256;
-      canvas.height = 256;
-      const ctx = canvas.getContext('2d');
-
-      ctx.fillStyle = '#f5f5f5';
-      ctx.fillRect(0, 0, 256, 256);
-      ctx.strokeStyle = '#cccccc';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(4, 4, 248, 248);
-
-      ctx.fillStyle = '#1a1a2e';
-      const dotRadius = 20;
-      const positions = {
-        1: [[128, 128]],
-        2: [[68, 68], [188, 188]],
-        3: [[68, 68], [128, 128], [188, 188]],
-        4: [[68, 68], [188, 68], [68, 188], [188, 188]],
-        5: [[68, 68], [188, 68], [128, 128], [68, 188], [188, 188]],
-        6: [[68, 68], [188, 68], [68, 128], [188, 128], [68, 188], [188, 188]]
-      };
-
-      (positions[dots] || []).forEach(p => {
-        ctx.beginPath();
-        ctx.arc(p[0], p[1], dotRadius, 0, Math.PI * 2);
-        ctx.fill();
-      });
-
-      return new THREE.CanvasTexture(canvas);
-    }
-
-    // --- СОЗДАНИЕ КУБИКА ---
-    const cubeGroup = new THREE.Group();
-    scene.add(cubeGroup);
-
-    const size = 1.8;
-    const half = size / 2;
-    const faceSize = size * 0.96;
-
-    // Материалы для каждой грани
-    const materials = {};
-    for (let i = 1; i <= 6; i++) {
-      materials[i] = new THREE.MeshStandardMaterial({
-        map: createFaceTexture(i),
-        roughness: 0.3,
-        metalness: 0.05,
-        side: THREE.DoubleSide
-      });
-    }
-
-    // Позиции и повороты граней (нормали направлены наружу)
-    const faceData = [
-      { pos: [half, 0, 0], rot: [0, Math.PI/2, 0], num: 3 },
-      { pos: [-half, 0, 0], rot: [0, -Math.PI/2, 0], num: 2 },
-      { pos: [0, half, 0], rot: [-Math.PI/2, 0, 0], num: 5 },
-      { pos: [0, -half, 0], rot: [Math.PI/2, 0, 0], num: 6 },
-      { pos: [0, 0, half], rot: [0, 0, 0], num: 1 },
-      { pos: [0, 0, -half], rot: [0, Math.PI, 0], num: 4 }
-    ];
-
-    faceData.forEach(data => {
-      const geom = new THREE.PlaneGeometry(faceSize, faceSize);
-      const mesh = new THREE.Mesh(geom, materials[data.num]);
-      mesh.position.set(data.pos[0], data.pos[1], data.pos[2]);
-      mesh.rotation.set(data.rot[0], data.rot[1], data.rot[2]);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      cubeGroup.add(mesh);
-
-      // Рамка
-      const edgeGeom = new THREE.EdgesGeometry(geom);
-      const edgeMat = new THREE.LineBasicMaterial({ color: 0x888899, transparent: true, opacity: 0.15 });
-      const wire = new THREE.LineSegments(edgeGeom, edgeMat);
-      wire.position.copy(mesh.position);
-      wire.rotation.copy(mesh.rotation);
-      cubeGroup.add(wire);
-    });
-
-    // --- ТЕНЬ (круг под кубиком) ---
-    const shadowGeom = new THREE.CircleGeometry(1.0, 16);
-    const shadowMat = new THREE.MeshBasicMaterial({
-      color: 0x000000,
-      transparent: true,
-      opacity: 0.4,
-      depthWrite: false
-    });
-    const shadow = new THREE.Mesh(shadowGeom, shadowMat);
-    shadow.rotation.x = -Math.PI / 2;
-    shadow.position.y = -0.95;
-    scene.add(shadow);
-
-    // --- ЛОГИКА БРОСКА ---
-    let isRolling = false;
-    const ANIMATION_DURATION = 1200; // мс
-    let rollStartTime = 0;
-    let startQuat = new THREE.Quaternion();
-    let targetQuat = new THREE.Quaternion();
-    let currentValue = 1;
-
-    // Функция получения кватерниона для верхней грани (нормаль +Y)
-    function getQuaternionForValue(value) {
-      const up = new THREE.Vector3(0, 1, 0);
-      // Нормали граней (в локальных координатах куба)
-      const normals = {
-        1: new THREE.Vector3(0, 0, 1),   // +Z
-        2: new THREE.Vector3(-1, 0, 0),  // -X
-        3: new THREE.Vector3(1, 0, 0),   // +X
-        4: new THREE.Vector3(0, 0, -1),  // -Z
-        5: new THREE.Vector3(0, 1, 0),   // +Y
-        6: new THREE.Vector3(0, -1, 0)   // -Y
-      };
-      const normal = normals[value];
-      if (!normal) return new THREE.Quaternion();
-      const quat = new THREE.Quaternion().setFromUnitVectors(normal, up);
-      return quat;
-    }
-
-    function rollDice() {
-      if (isRolling) return;
-      isRolling = true;
-
-      // Случайное число
-      currentValue = Math.floor(Math.random() * 6) + 1;
-      console.log(`🎲 Выпало: ${currentValue}`);
-
-      // Сохраняем текущий кватернион
-      startQuat.copy(cubeGroup.quaternion);
-
-      // Целевой кватернион для выпавшей грани
-      const baseQuat = getQuaternionForValue(currentValue);
-
-      // Добавляем случайные полные обороты для эффекта вращения
-      const extraRot = new THREE.Quaternion();
-      const axis = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
-      const angle = (2 + Math.random() * 3) * Math.PI * 2; // от 2 до 5 полных оборотов
-      extraRot.setFromAxisAngle(axis, angle);
-
-      // Целевой = базовый * дополнительные обороты (сначала база, потом доп)
-      // Чтобы кубик остановился в правильной ориентации, нужно чтобы базовый был последним?
-      // Лучше: умножаем базовый на доп, чтобы доп вращение было вокруг мировых осей? 
-      // Но для простоты используем: targetQuat = baseQuat * extraRot, но тогда порядок важен.
-      // Обычно: сначала применяем extraRot (в локальных координатах), потом baseQuat.
-      // Но мы хотим, чтобы финальная ориентация была baseQuat, а во время анимации кубик крутился.
-      // Поэтому мы можем умножить baseQuat на extraRot с одной стороны.
-      // Проще: targetQuat = baseQuat.clone().multiply(extraRot);
-      // Это даст итоговый поворот, где baseQuat применяется после extraRot? 
-      // В Three.js умножение q1.multiply(q2) означает q1 * q2 (сначала q2, потом q1).
-      // Так что если мы сделаем targetQuat = baseQuat.multiply(extraRot), то сначала применится extraRot (дополнительные обороты), затем baseQuat.
-      // Это даст финальную ориентацию baseQuat, но с дополнительным вращением, которое в итоге скомпенсируется? Нет, умножение не коммутативно.
-      // Чтобы получить вращение с последующей остановкой на baseQuat, мы можем просто интерполировать от текущего к baseQuat, но добавить случайные обороты в процессе.
-      // Более простой способ: интерполируем от текущего кватерниона к целевому, который равен baseQuat, но добавляем случайные значения в начальный момент.
-      // Сделаем так: во время анимации мы будем вычислять промежуточный кватернион, который сначала сильно отклоняется, а затем приходит к baseQuat.
-      // Для этого можно использовать сферическую интерполяцию с дополнительным вращением, но проще: задать targetQuat = baseQuat, а в процессе анимации добавить вращение, которое затухает.
-      // Или: при старте мы добавляем случайный поворот к startQuat, а затем интерполируем к baseQuat.
-      // Но мы уже сохранили startQuat как текущий. Мы можем в начале анимации установить кубик в некоторое случайное положение (с большим вращением), а затем анимировать к baseQuat.
-      // Однако это вызовет рывок. Лучше: использовать два этапа: первый этап - быстрое вращение с постоянной скоростью, второй - замедление и остановка на baseQuat.
-      // Но для простоты можно сделать так: мы интерполируем от startQuat к baseQuat, но добавляем синусоидальные колебания, которые затухают.
-      // Однако проще всего - использовать обычную интерполяцию от startQuat к baseQuat с дополнительным вращением, которое вычисляется как функция времени.
-      // Мы можем взять targetQuat = baseQuat, а во время анимации вычислять промежуточный кватернион = startQuat * (дополнительное вращение, которое затухает) и затем интерполировать к baseQuat.
-      // Это сложно. 
-      // Самый простой и надежный способ: задать целевой кватернион как baseQuat, а во время анимации добавить случайные вращения, которые постепенно уменьшаются до нуля.
-      // Для этого мы будем вычислять финальный кватернион как baseQuat * (дополнительное вращение, зависящее от времени, с затуханием). 
-      // Но тогда финальный кватернион не будет точно baseQuat в конце, если затухание не до нуля.
-      // Лучше: интерполируем от startQuat к baseQuat с помощью slerp, но добавляем к углу поворота случайную величину, которая уменьшается.
-      // Я предлагаю использовать такой подход: 
-      // 1. Сохраняем startQuat.
-      // 2. Генерируем случайные углы для вращения вокруг осей X, Y, Z (большие).
-      // 3. Создаем дополнительный кватернион из этих углов.
-      // 4. Целевой кватернион = baseQuat (без дополнительных оборотов).
-      // 5. В процессе анимации мы вычисляем промежуточный кватернион как slerp между startQuat и targetQuat, но с добавлением дополнительного вращения, которое затухает.
-      // Вместо этого можно просто анимировать углы Эйлера, так как это проще для понимания.
-      // Давайте вернемся к углам Эйлера. Мы знаем точные углы для каждой грани. При клике мы берем текущие углы, генерируем целевые углы (те, которые дают нужную грань) и добавляем большие случайные значения. Затем анимируем интерполяцию с замедлением.
-      // Так мы уже делали ранее. Это работает.
-
-      // Возвращаемся к углам Эйлера.
-      // Функция получения целевых углов (в радианах) для верхней грани
-      function getTargetAngles(value) {
-        const angles = {
-          1: { x: -Math.PI/2, y: 0, z: 0 },
-          2: { x: -Math.PI/2, y: 0, z: -Math.PI/2 },
-          3: { x: -Math.PI/2, y: 0, z: Math.PI/2 },
-          4: { x: -Math.PI/2, y: 0, z: Math.PI },
-          5: { x: 0, y: 0, z: 0 },
-          6: { x: Math.PI, y: 0, z: 0 }
-        };
-        return angles[value] || angles[1];
-      }
-
-      // Сохраняем начальные углы
-      const startAngles = {
-        x: cubeGroup.rotation.x,
-        y: cubeGroup.rotation.y,
-        z: cubeGroup.rotation.z
-      };
-
-      const base = getTargetAngles(currentValue);
-
-      // Добавляем случайные полные обороты
-      const extraX = (2 + Math.random() * 3) * Math.PI * 2;
-      const extraY = (2 + Math.random() * 3) * Math.PI * 2;
-      const extraZ = (1 + Math.random() * 2) * Math.PI * 2;
-
-      const targetAngles = {
-        x: base.x + extraX * (Math.random() > 0.5 ? 1 : -1),
-        y: base.y + extraY * (Math.random() > 0.5 ? 1 : -1),
-        z: base.z + extraZ * (Math.random() > 0.5 ? 1 : -1)
-      };
-
-      // Сохраняем для анимации
-      window._rollData = {
-        startAngles,
-        targetAngles,
-        startTime: performance.now(),
-        duration: ANIMATION_DURATION
-      };
-
-      rollStartTime = performance.now();
-      startQuat.copy(cubeGroup.quaternion);
-      // Для совместимости сохраним targetQuat как кватернион из targetAngles
-      targetQuat.setFromEuler(new THREE.Euler(targetAngles.x, targetAngles.y, targetAngles.z));
-    }
-
-    // Обработчики
-    renderer.domElement.addEventListener('click', rollDice);
-    window.addEventListener('keydown', (e) => {
-      if (e.code === 'Space') {
-        e.preventDefault();
-        rollDice();
-      }
-    });
-
-    // --- АНИМАЦИЯ ---
-    function animate() {
-      requestAnimationFrame(animate);
-
-      if (isRolling) {
-        const data = window._rollData;
-        if (data) {
-          const elapsed = performance.now() - data.startTime;
-          let progress = Math.min(elapsed / data.duration, 1);
-          // easeOutCubic
-          const ease = 1 - Math.pow(1 - progress, 3);
-
-          // Интерполяция углов
-          const currentX = data.startAngles.x + (data.targetAngles.x - data.startAngles.x) * ease;
-          const currentY = data.startAngles.y + (data.targetAngles.y - data.startAngles.y) * ease;
-          const currentZ = data.startAngles.z + (data.targetAngles.z - data.startAngles.z) * ease;
-
-          cubeGroup.rotation.x = currentX;
-          cubeGroup.rotation.y = currentY;
-          cubeGroup.rotation.z = currentZ;
-
-          if (progress >= 1) {
-            isRolling = false;
-            // Фиксируем конечные углы
-            cubeGroup.rotation.x = data.targetAngles.x;
-            cubeGroup.rotation.y = data.targetAngles.y;
-            cubeGroup.rotation.z = data.targetAngles.z;
-          }
+<?php if ($page === 'student_view'): ?>
+<!-- ============ ПУБЛИЧНАЯ СТРАНИЦА УЧЕНИКА ============ -->
+<?php 
+$viewStudentId = isset($_GET['id']) ? $_GET['id'] : null;
+if ($viewStudentId && isset($data['tutor']['students'][$viewStudentId])):
+    $student = $data['tutor']['students'][$viewStudentId];
+// Автосписание прошедших уроков
+$now = new DateTime();
+$hasUpdates = false;
+foreach ($data['tutor']['events'] as &$event) {
+    if ($event['student_id'] === $viewStudentId && $event['status'] === 'booked' && !$event['paid']) {
+        $eventDateTime = new DateTime($event['date'] . ' ' . $event['end']);
+        if (!isset($event['price']) || $event['price'] == 0) {
+            foreach ($data['tutor']['services'] as $s) {
+                if ($s['id'] == $event['service_id']) {
+                    $event['price'] = $s['price'];
+                    break;
+                }
+            }
         }
-      }
-
-      renderer.render(scene, camera);
+        if ($eventDateTime <= $now) {
+            $data['tutor']['students'][$viewStudentId]['balance'] -= $event['price'];
+            $newBalance = $data['tutor']['students'][$viewStudentId]['balance'];
+            $event['paid'] = ($newBalance >= 0);
+            $event['status'] = 'completed';
+            foreach ($data['tutor']['students'][$viewStudentId]['records'] as &$rec) {
+                if ($rec['event_id'] == $event['id']) {
+                    $rec['paid'] = $event['paid'];
+                    $rec['status'] = 'completed';
+                    break;
+                }
+            }
+            $hasUpdates = true;
+        }
     }
-
-    animate();
-
-    // --- АДАПТАЦИЯ ПОД РАЗМЕР ---
-    window.addEventListener('resize', () => {
-      const aspect = window.innerWidth / window.innerHeight;
-      const frustumSize = 6;
-      camera.left = -frustumSize * aspect / 2;
-      camera.right = frustumSize * aspect / 2;
-      camera.top = frustumSize / 2;
-      camera.bottom = -frustumSize / 2;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+}
+if ($hasUpdates) {
+    saveData($data);
+    $data = json_decode(file_get_contents($dataFile), true);
+    $student = $data['tutor']['students'][$viewStudentId];
+}
+    // Собираем уроки ученика
+    $studentLessons = [];
+    foreach ($data['tutor']['events'] as $event) {
+        if ($event['type'] === 'lesson' && $event['student_id'] === $viewStudentId) {
+            $serviceName = '';
+            $price = 0;
+            foreach ($data['tutor']['services'] as $s) {
+                if ($s['id'] == $event['service_id']) {
+                    $serviceName = $s['name'];
+                    $price = $s['price'];
+                    break;
+                }
+            }
+            $studentLessons[] = [
+                'date' => $event['date'],
+                'start' => $event['start'],
+                'end' => $event['end'],
+                'service' => $serviceName,
+                'price' => $price,
+                'status' => $event['status'],
+                'paid' => $event['paid'],
+                'break_after' => $event['break_after'] ?? 0,
+                'created_by' => $event['created_by'] ?? 'tutor'
+            ];
+        }
+    }
+    usort($studentLessons, function($a, $b) {
+        return strcmp($a['date'] . $a['start'], $b['date'] . $b['start']);
     });
+    
+    // Сообщения для ученика
+    if ($message && $page === 'student_view') {
+        echo '<div class="alert alert-success">' . $message . '</div>';
+    }
+    if ($error && $page === 'student_view') {
+        echo '<div class="alert alert-error">' . $error . '</div>';
+    }
+?>
+<div class="card">
+    <div class="student-public-header">
+        <h2>👤 Личный кабинет ученика</h2>
+        <p><strong><?= htmlspecialchars($student['name']) ?></strong> • <?= htmlspecialchars($student['phone']) ?></p>
+        <p style="font-size:13px;color:#64748b;">💰 Баланс: <strong style="color:#22c55e;"><?= number_format($student['balance'], 2) ?> ₽</strong></p>
+    </div>
+    
+    <!-- Календарь для записи -->
+    <div style="margin-bottom:20px;">
+        <h4 style="margin-bottom:12px;">📅 Записаться на урок</h4>
+        <p style="font-size:13px;color:#64748b;margin-bottom:12px;">🟩 Свободно • ⬜ Занято • 🔵 Мои уроки</p>
+        
+        <!-- Навигация по неделям для ученика -->
+        <div class="week-navigation">
+            <button class="week-nav-btn" onclick="changeStudentWeek(-1)">← Предыдущая</button>
+            <span class="week-title" id="studentWeekTitle"><?= getWeekTitle($weekDays) ?></span>
+            <button class="week-nav-btn" onclick="changeStudentWeek(1)">Следующая →</button>
+        </div>
+        
+        <!-- Календарь для ученика - шаг 15 минут -->
+        <div class="calendar-grid" id="studentCalendar">
+            <div class="calendar-header">
+                <div class="time-column" style="padding:8px 4px;text-align:center;font-size:12px;color:#94a3b8;border-right:1px solid #e2e8f0;"></div>
+                <?php foreach ($weekDays as $day):
+                    $dayStr = $day->format('Y-m-d');
+                    $dayName = $day->format('D');
+                    $dayNum = $day->format('d');
+                    $isToday = $dayStr === $currentDayStr;
+                    $dayNames = ['Mon' => 'ПН', 'Tue' => 'ВТ', 'Wed' => 'СР', 'Thu' => 'ЧТ', 'Fri' => 'ПТ', 'Sat' => 'СБ', 'Sun' => 'ВС'];
+                    $dayKey = getDayName($day);
+                    $workHours = getWorkHoursForDate($day, $data);
+                    $isWorking = $workHours !== null;
+                ?>
+                <div class="day-header-cell <?= $isToday ? 'today' : '' ?> <?= !$isWorking ? 'non-working' : '' ?>" data-date="<?= $dayStr ?>">
+                    <div class="day-name"><?= $dayNames[$dayName] ?></div>
+                    <div class="day-number"><?= $dayNum ?></div>
+                    <?php if (!$isWorking): ?>
+                    <span class="non-working-label">🚫 выходной</span>
+                    <?php else: ?>
+                    <span style="font-size:8px;color:#94a3b8;"><?= $workHours['start'] ?>-<?= $workHours['end'] ?></span>
+                    <?php endif; ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+            
+            <div class="calendar-body" id="studentCalendarBody">
+                <?php 
+                $workStart = new DateTime($data['tutor']['work_start']);
+                $workEnd = new DateTime($data['tutor']['work_end']);
+                $currentTime = clone $workStart;
+                $studentId = $viewStudentId;
+                
+                // Шаг 15 минут для календаря ученика
+                while ($currentTime < $workEnd):
+                    $timeStr = $currentTime->format('H:i');
+                ?>
+                <div class="time-row" data-time="<?= $timeStr ?>">
+                    <div class="time-label"><?= $timeStr ?></div>
+                    
+                    <?php foreach ($weekDays as $day):
+                        $dayStr = $day->format('Y-m-d');
+                        $workHours = getWorkHoursForDate($day, $data);
+                        $isWorking = $workHours !== null;
+                        
+                        $slotTime = DateTime::createFromFormat('H:i', $timeStr);
+                        $workStartTime = $workHours ? DateTime::createFromFormat('H:i', $workHours['start']) : null;
+                        $workEndTime = $workHours ? DateTime::createFromFormat('H:i', $workHours['end']) : null;
+                        $isWithinWorkHours = $isWorking && $slotTime >= $workStartTime && $slotTime < $workEndTime;
+                        
+                        $events = getEventsForDay($dayStr, $data);
+                        
+                                                // Ищем события для этой ячейки. 
+                        // Приоритет: Сначала смотрим на свои уроки, затем на чужие.
+                        $myEvent = null;
+                        $busyEvent = null;
+                        
+                        foreach ($events as $event) {
+                            $eventStart = DateTime::createFromFormat('H:i', $event['start']);
+                            $eventEnd = DateTime::createFromFormat('H:i', $event['end']);
+                            
+                            if ($slotTime >= $eventStart && $slotTime < $eventEnd) {
+                                if ($event['student_id'] === $studentId) {
+                                    $myEvent = $event;
+                                    break; // Нашли свой урок — сразу выходим, это главное
+                                } else {
+                                    $busyEvent = $event; // Нашли чужой — запомнили, но продолжаем искать свой
+                                }
+                            }
+                        }
+                        
+                                                                        // Определяем класс ячейки для ученика
+                        if (!$isWorking || !$isWithinWorkHours) {
+                            $cellClass = 'time-cell non-working';
+                            $cellContent = '<div class="non-working-text" style="font-size:9px;color:#94a3b8;">' . (!$isWorking ? 'выходной' : '⏸️') . '</div>';
+                            $cellStyle = '';
+                            $cellOnclick = '';
+                        } elseif ($myEvent) {
+                                                                           // Это урок ученика - показываем цветным
+                        $studentName = $student['name'];
+                        $serviceName = '';
+                        foreach ($data['tutor']['services'] as $s) {
+                            if ($s['id'] == $myEvent['service_id']) {
+                                $serviceName = $s['name'];
+                                break;
+                            }
+                        }
+                        $eventStart = DateTime::createFromFormat('H:i', $myEvent['start']);
+                        $eventEnd = DateTime::createFromFormat('H:i', $myEvent['end']);
+                        
+                        // Определяем цвет в зависимости от статуса и оплаты
+                        if ($myEvent['paid']) {
+                            $bgColor = '#c2f0c0'; // оплачено
+                            $textColor = '#1a5a2a';
+                            $borderColor = '#8bc34a';
+                        } elseif ($myEvent['status'] === 'completed') {
+                            $bgColor = '#f5f5a2'; // состоялось, но не оплачено
+                            $textColor = '#8a7a2a';
+                            $borderColor = '#d4c84a';
+                        } else {
+                            $bgColor = '#a8c7ed'; // забронировано
+                            $textColor = '#1a2a4a';
+                            $borderColor = '#6d8fd4';
+                        }
+                        
+                        $cellClass = 'time-cell has-lesson';
+                        $cellOnclick = '';
+                        
+                        if ($timeStr == $eventStart->format('H:i')) {
+                            $cellStyle = 'background: ' . $bgColor . '; color: ' . $textColor . '; padding: 4px 6px; border-radius: 4px; cursor: default; border: 1px solid ' . $borderColor . ';';
+                            $cellContent = '<div class="lesson-content" style="font-family: \'Unbounded\', sans-serif; text-align: center; line-height: 1.3;">';
+                            $cellContent .= '<div style="font-size: 16px; font-weight: 700;">' . htmlspecialchars($studentName) . '</div>';
+                            $cellContent .= '<div style="font-size: 12px; font-weight: 400; margin-bottom: 2px;">' . htmlspecialchars($serviceName) . '</div>';
+                            $cellContent .= '<div style="font-size: 11px; font-weight: 400;">' . $myEvent['start'] . ' - ' . $myEvent['end'] . '</div>';
+                            $breakText = $myEvent['break_after'] > 0 ? '+' . $myEvent['break_after'] . 'мин перерыв' : '';
+                            if ($breakText) {
+                                $cellContent .= '<div style="font-size: 10px; font-weight: 400; margin-top: 2px; color: #475569;">' . $breakText . '</div>';
+                            }
+                            $cellContent .= '</div>';
+                        } else {
+                            $cellContent = '';
+                            $cellStyle = 'background: ' . $bgColor . '; opacity: 0.15; padding: 2px; border-radius: 4px;';
+                        }
+                        } elseif ($busyEvent) {
+                            // Чужой урок или закрытое время - показываем серым
+                            $cellClass = 'time-cell busy-for-student';
+                            $cellContent = '<div class="busy-label">⬜ Занято</div>';
+                            $cellStyle = '';
+                            $cellOnclick = '';
+                        } else {
+                            // Свободное время
+                            $cellClass = 'time-cell free-for-student';
+                            $cellContent = '<div class="free-label">🟩 Свободно</div>';
+                            $cellStyle = '';
+                            $cellOnclick = "onclick=\"openStudentBooking('{$dayStr}', '{$timeStr}')\"";
+                        }
+                
+                    ?>
+                    <div class="<?= $cellClass ?>" 
+                         data-date="<?= $dayStr ?>"
+                         data-time="<?= $timeStr ?>"
+                         <?= $cellOnclick ?>
+                         style="<?= $cellStyle ?>">
+                        <?= $cellContent ?>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+                <?php 
+                    $currentTime->modify('+15 minutes');
+                endwhile; 
+                ?>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Модальное окно записи для ученика с шагом 5 минут -->
+    <div class="modal" id="studentBookingModal">
+        <div class="modal-content">
+            <button class="close-btn" onclick="closeStudentBooking()">×</button>
+            <h3 style="margin-bottom:16px;">📝 Запись на урок</h3>
+            <form method="POST" id="studentBookingForm">
+                <input type="hidden" name="action" value="create_lesson">
+                <input type="hidden" name="student_id" value="<?= $viewStudentId ?>">
+                <input type="hidden" name="created_by" value="student">
+                <input type="hidden" name="date" id="studentBookDate">
+                <input type="hidden" name="start_time" id="studentBookStart">
+                <input type="hidden" name="end_time" id="studentBookEnd">
+                <input type="hidden" name="break_after" id="studentBookBreak" value="0">
+                
+                <div class="form-row">
+                    <label>📅 Дата</label>
+                    <span id="studentBookDisplayDate" style="font-weight:500;"></span>
+                </div>
+                <div class="form-row">
+                    <label>⏰ Время</label>
+                    <span id="studentBookDisplayTime" style="font-weight:500;"></span>
+                </div>
+                <div class="form-row">
+                    <label>📚 Услуга</label>
+                    <select name="service_id" id="studentBookService" required onchange="updateStudentBookEnd()">
+                        <option value="">Выберите услугу</option>
+                        <?php foreach ($data['tutor']['services'] as $service): ?>
+                        <option value="<?= $service['id'] ?>" data-duration="<?= $service['duration'] ?>" data-break="<?= $service['break_after'] ?>">
+                            <?= $service['name'] ?> (<?= $service['duration'] ?> мин, <?= $service['price'] ?> ₽)
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>⏱️ Перерыв (мин)</label>
+                    <input type="number" name="break_after" id="studentBookBreakInput" value="0" min="0" max="60" step="5" onchange="updateStudentBookEnd()">
+                </div>
+                <div class="form-row">
+                    <label>📝 Комментарий</label>
+                    <textarea name="note" placeholder="Дополнительная информация (необязательно)"></textarea>
+                </div>
+                <button type="submit" class="btn btn-student" style="width:100%;">📝 Записаться</button>
+            </form>
+        </div>
+    </div>
+    
+    <h4 style="margin-bottom:12px;">📋 Мои занятия</h4>
+    <?php if (empty($studentLessons)): ?>
+    <p style="color:#64748b;text-align:center;padding:20px 0;">У вас пока нет занятий</p>
+    <?php else: ?>
+    <div style="overflow-x:auto;">
+    <table class="student-public-table">
+        <thead>
+            <tr><th>Дата</th><th>Время</th><th>Услуга</th><th>Стоимость</th><th>Статус</th></tr>
+        </thead>
+        <tbody>
+            <?php foreach ($studentLessons as $record): ?>
+            <tr>
+                <td><?= $record['date'] ?></td>
+                <td><?= $record['start'] ?? '' ?>-<?= $record['end'] ?? '' ?></td>
+                <td><?= $record['service'] ?></td>
+                <td><?= $record['price'] ?> ₽</td>
+                <td>
+                    <?php if ($record['status'] === 'cancelled'): ?>
+                    ❌ Отменен
+                    <?php elseif ($record['paid']): ?>
+                    <span class="status-paid">✅ Оплачено</span>
+                    <?php else: ?>
+                    <span class="status-unpaid">⏳ Ожидает оплаты</span>
+                    <?php endif; ?>
+                </td>
+            </tr>
+            <?php endforeach; ?>
+        </tbody>
+    </table>
+    </div>
+    <?php endif; ?>
+    
+    <div class="student-public-footer">
+        <p>📅 Система управления расписанием</p>
+    </div>
+</div>
 
-    // Первый бросок
-    setTimeout(() => rollDice(), 300);
+<script>
+// Переменные для навигации по неделям ученика
+let studentWeekOffset = <?= $weekOffset ?>;
 
-    console.log('🎲 Кубик готов! Кликни или пробел.');
-  </script>
+function changeStudentWeek(delta) {
+    studentWeekOffset += delta;
+    window.location.href = '?action=student_view&id=<?= $viewStudentId ?>&week=' + studentWeekOffset;
+}
+
+// Открыть модальное окно записи
+function openStudentBooking(date, time) {
+    document.getElementById('studentBookDate').value = date;
+    document.getElementById('studentBookStart').value = time;
+    document.getElementById('studentBookDisplayDate').textContent = date;
+    document.getElementById('studentBookDisplayTime').textContent = time;
+    
+    // Сбрасываем выбор услуги
+    document.getElementById('studentBookService').selectedIndex = 0;
+    document.getElementById('studentBookEnd').value = '';
+    document.getElementById('studentBookBreak').value = 0;
+    document.getElementById('studentBookBreakInput').value = 0;
+    
+    document.getElementById('studentBookingModal').classList.add('active');
+}
+
+function closeStudentBooking() {
+    document.getElementById('studentBookingModal').classList.remove('active');
+}
+
+// Обновление времени окончания при выборе услуги (шаг 5 минут)
+function updateStudentBookEnd() {
+    const select = document.getElementById('studentBookService');
+    const startTime = document.getElementById('studentBookStart').value;
+    const endField = document.getElementById('studentBookEnd');
+    const breakField = document.getElementById('studentBookBreak');
+    const breakInput = document.getElementById('studentBookBreakInput');
+    const selectedOption = select.options[select.selectedIndex];
+    
+    if (!startTime || !selectedOption.value) {
+        endField.value = '';
+        return;
+    }
+    
+    const duration = parseInt(selectedOption.dataset.duration || 60);
+    const breakAfter = parseInt(breakInput.value || 0);
+    breakField.value = breakAfter;
+    
+    // Рассчитываем конец с шагом 5 минут
+    const [hours, minutes] = startTime.split(':').map(Number);
+    const totalMinutes = duration + breakAfter;
+    const endDate = new Date();
+    endDate.setHours(hours, minutes + totalMinutes);
+    // Округляем до 5 минут вверх
+    const endMinutes = endDate.getMinutes();
+    const roundedMinutes = Math.ceil(endMinutes / 5) * 5;
+    endDate.setMinutes(roundedMinutes);
+    const endHour = String(endDate.getHours()).padStart(2, '0');
+    const endMin = String(endDate.getMinutes()).padStart(2, '0');
+    endField.value = endHour + ':' + endMin;
+}
+
+// Закрыть модалку при клике вне
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('modal')) {
+        e.target.classList.remove('active');
+    }
+});
+</script>
+
+<?php else: ?>
+<div class="card">
+    <div style="text-align:center;padding:40px 20px;">
+        <h3 style="color:#ef4444;">❌ Ученик не найден</h3>
+        <p style="color:#64748b;margin-top:8px;">Проверьте правильность ссылки или обратитесь к преподавателю</p>
+        <a href="?action=calendar" class="btn btn-primary" style="margin-top:16px;">Вернуться на главную</a>
+    </div>
+</div>
+<?php endif; ?>
+
+<?php elseif ($page === 'calendar'): ?>
+<!-- ============ КАЛЕНДАРЬ (АДМИНКА) - ШАГ 15 МИНУТ ============ -->
+
+<div class="card">
+    <div class="card-title">
+        <span>📅 Календарь</span>
+        <span style="font-size:14px;font-weight:400;color:#64748b;">Клик по времени - создать урок, клик по уроку - редактировать</span>
+    </div>
+    <div class="week-navigation">
+        <form method="POST" style="display:inline;">
+            <input type="hidden" name="action" value="change_week">
+            <input type="hidden" name="week_offset" value="<?= $weekOffset - 1 ?>">
+            <button type="submit" class="week-nav-btn">← Предыдущая</button>
+        </form>
+        <span class="week-title"><?= getWeekTitle($weekDays) ?></span>
+        <form method="POST" style="display:inline;">
+            <input type="hidden" name="action" value="change_week">
+            <input type="hidden" name="week_offset" value="<?= $weekOffset + 1 ?>">
+            <button type="submit" class="week-nav-btn">Следующая →</button>
+        </form>
+    </div>
+    
+    <div class="calendar-grid">
+        <div class="calendar-header">
+            <div class="time-column" style="padding:8px 4px;text-align:center;font-size:12px;color:#94a3b8;border-right:1px solid #e2e8f0;"></div>
+            <?php foreach ($weekDays as $day):
+                $dayStr = $day->format('Y-m-d');
+                $dayName = $day->format('D');
+                $dayNum = $day->format('d');
+                $isToday = $dayStr === $currentDayStr;
+                $dayNames = ['Mon' => 'ПН', 'Tue' => 'ВТ', 'Wed' => 'СР', 'Thu' => 'ЧТ', 'Fri' => 'ПТ', 'Sat' => 'СБ', 'Sun' => 'ВС'];
+                $workHours = getWorkHoursForDate($day, $data);
+                $isWorking = $workHours !== null;
+            ?>
+            <div class="day-header-cell <?= $isToday ? 'today' : '' ?> <?= !$isWorking ? 'non-working' : '' ?>" data-date="<?= $dayStr ?>">
+                <div class="day-name"><?= $dayNames[$dayName] ?></div>
+                <div class="day-number"><?= $dayNum ?></div>
+                <?php if (!$isWorking): ?>
+                <span class="non-working-label">🚫 выходной</span>
+                <?php else: ?>
+                <span style="font-size:8px;color:#94a3b8;"><?= $workHours['start'] ?>-<?= $workHours['end'] ?></span>
+                <?php endif; ?>
+            </div>
+            <?php endforeach; ?>
+        </div>
+        
+      <div class="calendar-body">
+    <?php 
+    $workStart = new DateTime($data['tutor']['work_start']);
+    $workEnd = new DateTime($data['tutor']['work_end']);
+    $currentTime = clone $workStart;
+    
+    while ($currentTime < $workEnd):
+        $timeStr = $currentTime->format('H:i');
+    ?>
+    <div class="time-row" data-time="<?= $timeStr ?>">
+        <div class="time-label"><?= $timeStr ?></div>
+        
+        <?php foreach ($weekDays as $day):
+            $dayStr = $day->format('Y-m-d');
+            $workHours = getWorkHoursForDate($day, $data);
+            $isWorking = $workHours !== null;
+            
+            $slotTime = DateTime::createFromFormat('H:i', $timeStr);
+            $workStartTime = $workHours ? DateTime::createFromFormat('H:i', $workHours['start']) : null;
+            $workEndTime = $workHours ? DateTime::createFromFormat('H:i', $workHours['end']) : null;
+            $isWithinWorkHours = $isWorking && $slotTime >= $workStartTime && $slotTime < $workEndTime;
+            
+            $events = getEventsForDay($dayStr, $data);
+            
+            $slotEvent = null;
+            $eventStartTime = null;
+            $eventEndTime = null;
+            
+            foreach ($events as $event) {
+                $eventStart = DateTime::createFromFormat('H:i', $event['start']);
+                $eventEnd = DateTime::createFromFormat('H:i', $event['end']);
+                
+                if ($slotTime >= $eventStart && $slotTime < $eventEnd) {
+                    $slotEvent = $event;
+                    $eventStartTime = $eventStart;
+                    $eventEndTime = $eventEnd;
+                    break;
+                }
+            }
+            
+            $isBusy = false;
+            if ($slotEvent && $slotEvent['type'] === 'busy') {
+                $isBusy = true;
+            }
+            
+            $cellClass = 'time-cell';
+            $cellStyle = '';
+            $cellContent = '';
+            $cellOnclick = '';
+            
+            if (!$isWorking) {
+                $cellClass .= ' non-working';
+                $cellContent = '<div class="non-working-text" style="font-size:9px;color:#94a3b8;">выходной</div>';
+            } elseif (!$isWithinWorkHours) {
+                $cellClass .= ' non-working';
+                $cellContent = '<div class="non-working-text" style="font-size:9px;color:#94a3b8;">⏸️</div>';
+            } elseif ($slotEvent && $slotEvent['type'] === 'lesson') {
+                $studentName = '';
+                if ($slotEvent['student_id'] && isset($data['tutor']['students'][$slotEvent['student_id']])) {
+                    $studentName = $data['tutor']['students'][$slotEvent['student_id']]['name'];
+                }
+                $serviceName = '';
+                $serviceDuration = 60;
+                $serviceBreak = 0;
+                foreach ($data['tutor']['services'] as $s) {
+                    if ($s['id'] == $slotEvent['service_id']) {
+                        $serviceName = $s['name'];
+                        $serviceDuration = $s['duration'];
+                        $serviceBreak = $s['break_after'];
+                        break;
+                    }
+                }
+                $breakAfter = isset($slotEvent['break_after']) ? intval($slotEvent['break_after']) : $serviceBreak;
+                
+                $lessonEndTime = clone $eventStartTime;
+                $lessonEndTime->modify('+' . $serviceDuration . ' minutes');
+                
+                $isLessonPart = ($slotTime < $lessonEndTime);
+                $isBreakPart = ($slotTime >= $lessonEndTime && $slotTime < $eventEndTime);
+                
+                $createdBy = $slotEvent['created_by'] ?? 'tutor';
+                if ($slotEvent['paid']) {
+                    $bgColor = '#c2f0c0';
+                    $textColor = '#1a5a2a';
+                    $borderColor = '#8bc34a';
+                } elseif ($slotEvent['status'] === 'completed') {
+                    $bgColor = '#f5f5a2';
+                    $textColor = '#8a7a2a';
+                    $borderColor = '#d4c84a';
+                } else {
+                    $bgColor = ($createdBy === 'student') ? '#a8c7ed' : '#a0d5ee';
+                    $textColor = ($createdBy === 'student') ? '#1a2a4a' : '#1a3a5a';
+                    $borderColor = ($createdBy === 'student') ? '#6d8fd4' : '#7bb8d4';
+                }
+                
+                $cellClass .= ' has-lesson';
+                $cellOnclick = "onclick=\"openEventDetails('{$slotEvent['id']}')\"";
+                
+                $isEventStart = ($timeStr == $slotEvent['start']);
+                
+                if ($isEventStart) {
+                    $cellStyle = 'background: ' . $bgColor . '; color: ' . $textColor . '; padding: 4px 6px; border-radius: 4px; cursor: pointer; border: 1px solid ' . $borderColor . ';';
+                    $cellContent = '<div class="lesson-content" style="font-family: \'Unbounded\', sans-serif; text-align: center; line-height: 1.3;">';
+                    $cellContent .= '<div style="font-size: 16px; font-weight: 700;">' . htmlspecialchars($studentName ?: 'Урок') . '</div>';
+                    $cellContent .= '<div style="font-size: 12px; font-weight: 400; margin-bottom: 2px;">' . htmlspecialchars($serviceName) . '</div>';
+                    $cellContent .= '<div style="font-size: 11px; font-weight: 400;">' . $slotEvent['start'] . ' - ' . $slotEvent['end'] . '</div>';
+                    if ($breakAfter > 0) {
+                        $cellContent .= '<div style="font-size: 10px; font-weight: 400; margin-top: 2px; color: #475569;">+' . $breakAfter . 'мин перерыв</div>';
+                    }
+                    $cellContent .= '</div>';
+                } else {
+                    if ($isBreakPart) {
+                        $cellStyle = 'background: ' . $bgColor . '; opacity: 0.3; cursor: pointer; padding: 2px; border-radius: 2px; border: 1px solid ' . $borderColor . ';';
+                        $cellContent = '<div style="font-size: 8px; color: ' . $textColor . '; text-align: center; opacity: 0.8;">перерыв</div>';
+                    } else {
+                        $cellStyle = 'background: ' . $bgColor . '; opacity: 0.6; cursor: pointer; padding: 2px; border-radius: 2px; border: 1px solid ' . $borderColor . ';';
+                        $cellContent = '';
+                    }
+                }
+            } elseif ($isBusy) {
+                $cellClass .= ' busy';
+                $bgColor = '#fef2f2';
+                $cellStyle = 'background: ' . $bgColor . '; opacity: 0.7; cursor: not-allowed; padding: 4px 6px; border-radius: 4px; border: 1px solid #fca5a5;';
+                $cellContent = '<div class="busy-label" style="font-size:9px;color:#dc2626;font-weight:500;text-align:center;">🔴 ' . htmlspecialchars($slotEvent['note'] ?? 'Занято') . '</div>';
+            } else {
+                $cellClass .= ' free';
+                $cellOnclick = "onclick=\"openCellAction('{$dayStr}', '{$timeStr}')\"";
+                $cellContent = '<div style="font-size:14px;color:#94a3b8;">+</div>';
+            }
+        ?>
+        <div class="<?= $cellClass ?>" 
+             data-date="<?= $dayStr ?>"
+             data-time="<?= $timeStr ?>"
+             <?= $cellOnclick ?>
+             style="<?= $cellStyle ?>">
+            <?= $cellContent ?>
+        </div>
+        <?php endforeach; ?>
+    </div>
+    <?php 
+        $currentTime->modify('+15 minutes');
+    endwhile; 
+    ?>
+</div>
+    
+    <!-- Новая модалка для действий со слотом -->
+    <div class="modal" id="cellActionModal">
+        <div class="modal-content">
+            <button class="close-btn" onclick="closeCellAction()">×</button>
+            <h3 style="margin-bottom:16px;">📌 Действие для слота</h3>
+
+            <div style="display:flex; gap:12px; margin-bottom:20px; flex-wrap:wrap;">
+                <button class="btn btn-primary" onclick="showAction('lesson')" id="btnLessonAction">📚 Создать урок</button>
+                <button class="btn btn-orange" onclick="showAction('busy')" id="btnBusyAction">⏰ Занять время</button>
+            </div>
+
+            <!-- Форма создания урока -->
+            <div id="cellActionLessonForm" style="display:none;">
+                <form method="POST" id="cellActionLessonFormElem">
+                    <input type="hidden" name="action" value="create_lesson">
+                    <input type="hidden" name="date" id="cellActionDate">
+                    <input type="hidden" name="start_time" id="cellActionStart">
+                    <input type="hidden" name="end_time" id="cellActionEnd">
+                    <input type="hidden" name="break_after" id="cellActionBreak">
+                    <input type="hidden" name="created_by" value="tutor">
+
+                    <div class="form-row">
+                        <label>📅 Дата</label>
+                        <span id="cellActionDisplayDate" style="font-weight:500;"></span>
+                    </div>
+                    <div class="form-row">
+                        <label>⏰ Начало</label>
+                        <span id="cellActionDisplayStart" style="font-weight:500;"></span>
+                    </div>
+                    <div class="form-row">
+                        <label>👤 Ученик</label>
+                        <select name="student_id" required>
+                            <option value="">Выберите ученика</option>
+                            <?php foreach ($data['tutor']['students'] as $id => $student): ?>
+                                <option value="<?= $id ?>"><?= $student['name'] ?> (<?= $student['phone'] ?>)</option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <label>📚 Услуга</label>
+                        <select name="service_id" id="cellActionServiceSelect" onchange="updateCellActionEnd()" required>
+                            <?php foreach ($data['tutor']['services'] as $service): ?>
+                                <option value="<?= $service['id'] ?>" data-duration="<?= $service['duration'] ?>" data-break="<?= $service['break_after'] ?>">
+                                    <?= $service['name'] ?> (<?= $service['duration'] ?> мин, <?= $service['price'] ?> ₽)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="form-row">
+                        <label>⏱️ Перерыв (мин)</label>
+                        <input type="number" name="break_after" id="cellActionBreakInput" value="0" min="0" max="60" step="5" onchange="updateCellActionEnd()">
+                    </div>
+                    <div class="form-row">
+                        <label>📝 Заметка</label>
+                        <textarea name="note" placeholder="Дополнительная информация"></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-success" style="width:100%;">✅ Создать урок</button>
+                </form>
+            </div>
+
+            <!-- Форма "Занять время" -->
+            <div id="cellActionBusyForm" style="display:none;">
+                <form method="POST" id="cellActionBusyFormElem">
+                    <input type="hidden" name="action" value="close_interval">
+                    <input type="hidden" name="date" id="cellActionBusyDate">
+
+                    <div class="form-row">
+                        <label>📅 Дата</label>
+                        <span id="cellActionBusyDisplayDate" style="font-weight:500;"></span>
+                    </div>
+                    <div class="form-row">
+                        <label>⏰ Начало</label>
+                        <input type="time" name="start_time" id="cellActionBusyStart" required step="300" onchange="updateBusyEnd()">
+                    </div>
+                    <div class="form-row">
+                        <label>⏰ Конец</label>
+                        <input type="time" name="end_time" id="cellActionBusyEnd" required step="300">
+                    </div>
+                    <div class="form-row">
+                        <label>📝 Причина</label>
+                        <input type="text" name="note" placeholder="Врач, обед, личное..." value="Занято">
+                    </div>
+                    <button type="submit" class="btn btn-orange" style="width:100%;">🔒 Занять время</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Остальные модалки (createLessonModal, eventDetailsModal, editLessonModal) остаются без изменений -->
+    <div class="modal" id="createLessonModal">
+        <div class="modal-content">
+            <button class="close-btn" onclick="closeCreateLesson()">×</button>
+            <h3 style="margin-bottom:16px;">📝 Создать урок</h3>
+            <form method="POST" id="createLessonForm">
+                <input type="hidden" name="action" value="create_lesson">
+                <input type="hidden" name="date" id="lessonDate">
+                <input type="hidden" name="created_by" value="tutor">
+                
+                <div class="form-row">
+                    <label>Дата</label>
+                    <span id="lessonDisplayDate" style="font-weight:500;"></span>
+                </div>
+                <div class="form-row">
+                    <label>Начало</label>
+                    <input type="time" name="start_time" id="lessonStart" required step="300">
+                </div>
+                <div class="form-row">
+                    <label>Конец</label>
+                    <input type="time" name="end_time" id="lessonEnd" required step="300" readonly style="background:#f1f5f9;cursor:not-allowed;">
+                </div>
+                <div class="form-row">
+                    <label>Ученик</label>
+                    <select name="student_id" required>
+                        <option value="">Выберите ученика</option>
+                        <?php foreach ($data['tutor']['students'] as $id => $student): ?>
+                        <option value="<?= $id ?>"><?= $student['name'] ?> (<?= $student['phone'] ?>)</option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Услуга</label>
+                    <select name="service_id" id="lessonServiceSelect" onchange="updateLessonEnd()" required>
+                        <?php foreach ($data['tutor']['services'] as $service): ?>
+                        <option value="<?= $service['id'] ?>" data-break="<?= $service['break_after'] ?>" data-duration="<?= $service['duration'] ?>">
+                            <?= $service['name'] ?> (<?= $service['duration'] ?> мин, <?= $service['price'] ?> ₽)
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Перерыв после (мин)</label>
+                    <input type="number" name="break_after" id="lessonBreakAfter" value="0" min="0" max="60" step="5">
+                </div>
+                <div class="form-row">
+                    <label>Заметка</label>
+                    <textarea name="note" placeholder="Дополнительная информация"></textarea>
+                </div>
+                <button type="submit" class="btn btn-success" style="width:100%;">Создать урок</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal" id="eventDetailsModal">
+        <div class="modal-content">
+            <button class="close-btn" onclick="closeEventDetails()">×</button>
+            <h3 style="margin-bottom:16px;">📝 Детали</h3>
+            <div id="eventDetailsContent">
+                <p style="color:#64748b;">Загрузка...</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="editLessonModal">
+        <div class="modal-content">
+            <button class="close-btn" onclick="closeEditLesson()">×</button>
+            <h3 style="margin-bottom:16px;">✏️ Редактировать урок</h3>
+            <form method="POST" id="editLessonForm">
+                <input type="hidden" name="action" value="edit_lesson">
+                <input type="hidden" name="event_id" id="editEventId">
+                <input type="hidden" name="user_edited_break" id="editUserEditedBreak" value="false">
+                
+                <div class="form-row">
+                    <label>Дата</label>
+                    <input type="date" name="date" id="editDate" required>
+                </div>
+                <div class="form-row">
+                    <label>Начало</label>
+                    <input type="time" name="start_time" id="editStart" required step="300">
+                </div>
+                <div class="form-row">
+                    <label>Конец</label>
+                    <input type="time" name="end_time" id="editEnd" required step="300" readonly style="background:#f1f5f9;cursor:not-allowed;">
+                </div>
+                <div class="form-row">
+                    <label>Ученик</label>
+                    <select name="student_id" id="editStudentId" required>
+                        <option value="">Выберите ученика</option>
+                        <?php foreach ($data['tutor']['students'] as $id => $student): ?>
+                        <option value="<?= $id ?>"><?= $student['name'] ?> (<?= $student['phone'] ?>)</option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Услуга</label>
+                    <select name="service_id" id="editServiceId" onchange="updateEditLessonEnd()">
+                        <?php foreach ($data['tutor']['services'] as $service): ?>
+                        <option value="<?= $service['id'] ?>" data-break="<?= $service['break_after'] ?>" data-duration="<?= $service['duration'] ?>">
+                            <?= $service['name'] ?> (<?= $service['duration'] ?> мин, <?= $service['price'] ?> ₽)
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Перерыв после (мин)</label>
+                    <input type="number" name="break_after" id="editBreakAfter" value="0" min="0" max="60" step="5"
+                           onchange="document.getElementById('editUserEditedBreak').value='true'; updateEditLessonEnd();">
+                </div>
+                <div class="form-row">
+                    <label>Статус</label>
+                    <select name="status" id="editStatus">
+                        <option value="booked">Забронирован</option>
+                        <option value="completed">Проведен</option>
+                        <option value="cancelled">Отменен</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>Заметка</label>
+                    <textarea name="note" id="editNote" placeholder="Дополнительная информация"></textarea>
+                </div>
+                
+                <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
+                    <button type="submit" class="btn btn-primary" style="flex:1;">💾 Сохранить</button>
+                </div>
+            </form>
+            
+            <div style="margin-top:16px; padding-top:16px; border-top:1px solid #e2e8f0;">
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <form method="POST" style="flex:1;" onsubmit="return confirm('Удалить это событие?')">
+                        <input type="hidden" name="action" value="delete_event">
+                        <input type="hidden" name="event_id" id="deleteEventId">
+                        <button type="submit" class="btn btn-danger" style="width:100%;">🗑️ Удалить</button>
+                    </form>
+                    <form method="POST" style="flex:1;" id="togglePaidForm">
+                        <input type="hidden" name="action" value="toggle_paid">
+                        <input type="hidden" name="event_id" id="togglePaidEventId">
+                        <input type="hidden" name="paid" id="togglePaidValue" value="true">
+                        <button type="submit" class="btn btn-success" id="togglePaidBtn" style="width:100%;">💰 Оплатить</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+window.studentsData = <?= json_encode($data['tutor']['students']) ?>;
+window.servicesData = <?php 
+    $servicesMap = [];
+    foreach ($data['tutor']['services'] as $s) {
+        $servicesMap[$s['id']] = $s;
+    }
+    echo json_encode($servicesMap);
+?>;
+
+function calculateEndTime(startTime, durationMinutes, breakMinutes) {
+    const [hours, minutes] = startTime.split(':').map(Number);
+    const totalMinutes = durationMinutes + breakMinutes;
+    const endDate = new Date();
+    endDate.setHours(hours, minutes + totalMinutes);
+    // Округляем до 5 минут вверх
+    const endMinutes = endDate.getMinutes();
+    const roundedMinutes = Math.ceil(endMinutes / 5) * 5;
+    endDate.setMinutes(roundedMinutes);
+    const endHour = String(endDate.getHours()).padStart(2, '0');
+    const endMin = String(endDate.getMinutes()).padStart(2, '0');
+    return endHour + ':' + endMin;
+}
+
+function updateLessonEnd() {
+    const select = document.getElementById('lessonServiceSelect');
+    const breakField = document.getElementById('lessonBreakAfter');
+    const endField = document.getElementById('lessonEnd');
+    const startField = document.getElementById('lessonStart');
+    const selectedOption = select.options[select.selectedIndex];
+    const breakValue = selectedOption ? parseInt(selectedOption.dataset.break || 0) : 0;
+    const duration = selectedOption ? parseInt(selectedOption.dataset.duration || 60) : 60;
+    
+    breakField.value = breakValue;
+    if (startField.value) {
+        endField.value = calculateEndTime(startField.value, duration, breakValue);
+    }
+}
+
+function updateEditLessonEnd() {
+    const select = document.getElementById('editServiceId');
+    const endField = document.getElementById('editEnd');
+    const startField = document.getElementById('editStart');
+    const selectedOption = select.options[select.selectedIndex];
+    const duration = selectedOption ? parseInt(selectedOption.dataset.duration || 60) : 60;
+    
+    const breakField = document.getElementById('editBreakAfter');
+    const breakValue = parseInt(breakField.value) || 0;
+    
+    if (startField.value) {
+        endField.value = calculateEndTime(startField.value, duration, breakValue);
+    }
+}
+
+function openCreateLesson(date) {
+    document.getElementById('lessonDate').value = date;
+    document.getElementById('lessonDisplayDate').textContent = date;
+    
+    const now = new Date();
+    const hour = String(now.getHours()).padStart(2, '0');
+    const min = String(Math.floor(now.getMinutes() / 15) * 15).padStart(2, '0');
+    const startTime = hour + ':' + min;
+    document.getElementById('lessonStart').value = startTime;
+    
+    const select = document.getElementById('lessonServiceSelect');
+    const selectedOption = select.options[select.selectedIndex];
+    const duration = selectedOption ? parseInt(selectedOption.dataset.duration || 60) : 60;
+    const breakValue = selectedOption ? parseInt(selectedOption.dataset.break || 0) : 0;
+    document.getElementById('lessonBreakAfter').value = breakValue;
+    document.getElementById('lessonEnd').value = calculateEndTime(startTime, duration, breakValue);
+    
+    document.getElementById('createLessonModal').classList.add('active');
+}
+
+function closeCreateLesson() {
+    document.getElementById('createLessonModal').classList.remove('active');
+}
+
+// ---------- НОВЫЕ ФУНКЦИИ ДЛЯ cellActionModal ----------
+function openCellAction(date, time) {
+    document.getElementById('cellActionDate').value = date;
+    document.getElementById('cellActionDisplayDate').textContent = date;
+    document.getElementById('cellActionStart').value = time;
+    document.getElementById('cellActionDisplayStart').textContent = time;
+
+    document.getElementById('cellActionBusyDate').value = date;
+    document.getElementById('cellActionBusyDisplayDate').textContent = date;
+    document.getElementById('cellActionBusyStart').value = time;
+    const [h, m] = time.split(':').map(Number);
+    let endH = h + 1, endM = m;
+    if (endH >= 24) endH -= 24;
+    document.getElementById('cellActionBusyEnd').value = String(endH).padStart(2,'0') + ':' + String(endM).padStart(2,'0');
+
+    showAction('lesson');
+    document.getElementById('cellActionModal').classList.add('active');
+}
+
+function closeCellAction() {
+    document.getElementById('cellActionModal').classList.remove('active');
+}
+
+function showAction(type) {
+    const lessonForm = document.getElementById('cellActionLessonForm');
+    const busyForm = document.getElementById('cellActionBusyForm');
+    const btnLesson = document.getElementById('btnLessonAction');
+    const btnBusy = document.getElementById('btnBusyAction');
+
+    if (type === 'lesson') {
+        lessonForm.style.display = 'block';
+        busyForm.style.display = 'none';
+        btnLesson.className = 'btn btn-primary';
+        btnBusy.className = 'btn btn-orange';
+        updateCellActionEnd();
+    } else {
+        lessonForm.style.display = 'none';
+        busyForm.style.display = 'block';
+        btnLesson.className = 'btn btn-primary';
+        btnBusy.className = 'btn btn-orange';
+    }
+}
+
+function updateCellActionEnd() {
+    const select = document.getElementById('cellActionServiceSelect');
+    const startTime = document.getElementById('cellActionStart').value;
+    const breakInput = document.getElementById('cellActionBreakInput');
+    const endField = document.getElementById('cellActionEnd');
+    const breakField = document.getElementById('cellActionBreak');
+
+    if (!startTime || !select.value) {
+        endField.value = '';
+        return;
+    }
+    const duration = parseInt(select.options[select.selectedIndex].dataset.duration || 60);
+    const breakAfter = parseInt(breakInput.value || 0);
+    breakField.value = breakAfter;
+
+    const [hours, minutes] = startTime.split(':').map(Number);
+    const totalMinutes = duration + breakAfter;
+    const endDate = new Date();
+    endDate.setHours(hours, minutes + totalMinutes);
+    const endMinutes = endDate.getMinutes();
+    const roundedMinutes = Math.ceil(endMinutes / 5) * 5;
+    endDate.setMinutes(roundedMinutes);
+    const endHour = String(endDate.getHours()).padStart(2, '0');
+    const endMin = String(endDate.getMinutes()).padStart(2, '0');
+    endField.value = endHour + ':' + endMin;
+}
+
+function updateBusyEnd() {
+    // ничего не делаем
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const select = document.getElementById('cellActionServiceSelect');
+    if (select) {
+        select.addEventListener('change', updateCellActionEnd);
+    }
+    const breakInput = document.getElementById('cellActionBreakInput');
+    if (breakInput) {
+        breakInput.addEventListener('change', updateCellActionEnd);
+    }
+});
+// ---------- КОНЕЦ НОВЫХ ФУНКЦИЙ ----------
+
+function openEventDetails(eventId) {
+    const modal = document.getElementById('eventDetailsModal');
+    const content = document.getElementById('eventDetailsContent');
+    
+    fetch('?action=get_event&id=' + eventId)
+        .then(response => response.json())
+        .then(event => {
+            if (!event) {
+                content.innerHTML = '<p style="color:#ef4444;">Событие не найдено</p>';
+                modal.classList.add('active');
+                return;
+            }
+            
+            let studentName = '', studentPhone = '', serviceName = '', price = 0;
+            
+            if (event.student_id && window.studentsData && window.studentsData[event.student_id]) {
+                studentName = window.studentsData[event.student_id].name || '';
+                studentPhone = window.studentsData[event.student_id].phone || '';
+            }
+            
+            if (event.service_id && window.servicesData && window.servicesData[event.service_id]) {
+                serviceName = window.servicesData[event.service_id].name || '';
+                price = window.servicesData[event.service_id].price || 0;
+            }
+            
+            const statusMap = {
+                'booked': 'Забронирован',
+                'completed': '✅ Проведен',
+                'cancelled': '❌ Отменен',
+                'closed': 'Занято'
+            };
+            
+            let eventType = event.type === 'busy' ? '🔴 Занято (не ученик)' : '📚 Урок';
+            let createdByLabel = event.created_by === 'student' ? '👤 Запись от ученика' : '👩‍🏫 Запись от репетитора';
+            
+            content.innerHTML = `
+                <div style="margin-bottom:16px;">
+                    <div class="form-row"><label>Тип</label><span>${eventType}</span></div>
+                    <div class="form-row"><label>${createdByLabel}</label></div>
+                    <div class="form-row"><label>📅 Дата</label><span>${event.date}</span></div>
+                    <div class="form-row"><label>⏰ Время</label><span>${event.start} - ${event.end}</span></div>
+                    ${event.type === 'lesson' ? `
+                        <div class="form-row"><label>📚 Услуга</label><span>${serviceName}</span></div>
+                        <div class="form-row"><label>👤 Ученик</label><span>${studentName}</span></div>
+                        <div class="form-row"><label>📱 Телефон</label><span>${studentPhone}</span></div>
+                        <div class="form-row"><label>💰 Стоимость</label><span>${price} ₽</span></div>
+                        <div class="form-row"><label>⏱️ Перерыв</label><span>${event.break_after || 0} мин</span></div>
+                        <div class="form-row"><label>Статус</label><span>${statusMap[event.status] || event.status}</span></div>
+                        <div class="form-row"><label>Оплата</label><span class="${event.paid ? 'paid' : 'unpaid'}">${event.paid ? '✅ Оплачено' : '❌ Не оплачено'}</span></div>
+                    ` : `
+                        <div class="form-row"><label>Причина</label><span>${event.note || 'Занято'}</span></div>
+                    `}
+                    ${event.note ? `<div class="form-row"><label>📝 Заметка</label><span>${event.note}</span></div>` : ''}
+                </div>
+                
+                <div style="border-top:1px solid #e2e8f0;padding-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+                    ${event.type === 'lesson' ? `
+                        <button class="btn btn-primary" onclick="closeEventDetails(); openEditLessonFromDetails('${event.id}')" style="flex:1;">📅 Редактировать</button>
+                        <form method="POST" style="flex:1;" onsubmit="return confirm('Отменить урок? Статус изменится на \"Отменен\"')">
+                            <input type="hidden" name="action" value="edit_lesson">
+                            <input type="hidden" name="event_id" value="${event.id}">
+                            <input type="hidden" name="date" value="${event.date}">
+                            <input type="hidden" name="start_time" value="${event.start}">
+                            <input type="hidden" name="end_time" value="${event.end}">
+                            <input type="hidden" name="student_id" value="${event.student_id || ''}">
+                            <input type="hidden" name="service_id" value="${event.service_id || ''}">
+                            <input type="hidden" name="break_after" value="${event.break_after || 0}">
+                            <input type="hidden" name="status" value="cancelled">
+                            <input type="hidden" name="note" value="${event.note || ''}">
+                            <button type="submit" class="btn btn-warning" style="width:100%;">❌ Отменить</button>
+                        </form>
+                        <form method="POST" style="flex:1;" id="togglePaidFromDetails">
+                            <input type="hidden" name="action" value="toggle_paid">
+                            <input type="hidden" name="event_id" value="${event.id}">
+                            <input type="hidden" name="paid" value="${event.paid ? 'false' : 'true'}">
+                            <button type="submit" class="btn ${event.paid ? 'btn-warning' : 'btn-success'}" style="width:100%;">
+                                ${event.paid ? '💰 Отменить оплату' : '💰 Оплатить'}
+                            </button>
+                        </form>
+                    ` : `
+                        <form method="POST" style="flex:1;" onsubmit="return confirm('Удалить этот занятый интервал?')">
+                            <input type="hidden" name="action" value="delete_event">
+                            <input type="hidden" name="event_id" value="${event.id}">
+                            <button type="submit" class="btn btn-danger" style="width:100%;">🗑️ Удалить</button>
+                        </form>
+                    `}
+                    <form method="POST" style="flex:1;" onsubmit="return confirm('Удалить это событие безвозвратно?')">
+                        <input type="hidden" name="action" value="delete_event">
+                        <input type="hidden" name="event_id" value="${event.id}">
+                        <button type="submit" class="btn btn-danger" style="width:100%;">🗑️ Удалить</button>
+                    </form>
+                </div>
+            `;
+            
+            modal.classList.add('active');
+        })
+        .catch(() => {
+            content.innerHTML = '<p style="color:#ef4444;">Ошибка загрузки данных события</p>';
+            modal.classList.add('active');
+        });
+}
+
+function closeEventDetails() {
+    document.getElementById('eventDetailsModal').classList.remove('active');
+}
+
+function openEditLessonFromDetails(eventId) {
+    fetch('?action=get_event&id=' + eventId)
+        .then(response => response.json())
+        .then(event => {
+            if (!event) {
+                alert('Событие не найдено');
+                return;
+            }
+            document.getElementById('editEventId').value = event.id;
+            document.getElementById('editDate').value = event.date;
+            document.getElementById('editStart').value = event.start;
+            document.getElementById('editEnd').value = event.end;
+            document.getElementById('editStudentId').value = event.student_id || '';
+            document.getElementById('editServiceId').value = event.service_id || '';
+            document.getElementById('editBreakAfter').value = event.break_after || 0;
+            document.getElementById('editStatus').value = event.status || 'booked';
+            document.getElementById('editNote').value = event.note || '';
+            document.getElementById('editUserEditedBreak').value = 'false';
+            
+            document.getElementById('deleteEventId').value = event.id;
+            document.getElementById('togglePaidEventId').value = event.id;
+            
+            const paidBtn = document.getElementById('togglePaidBtn');
+            const paidInput = document.getElementById('togglePaidValue');
+            if (event.paid) {
+                paidBtn.textContent = '💰 Отменить оплату';
+                paidBtn.className = 'btn btn-warning';
+                paidInput.value = 'false';
+            } else {
+                paidBtn.textContent = '💰 Оплатить';
+                paidBtn.className = 'btn btn-success';
+                paidInput.value = 'true';
+            }
+            
+            document.getElementById('editLessonModal').classList.add('active');
+        })
+        .catch(() => {
+            alert('Ошибка загрузки данных события');
+        });
+}
+
+function closeEditLesson() {
+    document.getElementById('editLessonModal').classList.remove('active');
+}
+
+function copyStudentLink(studentId) {
+    const url = window.location.origin + window.location.pathname + '?action=student_view&id=' + studentId;
+    navigator.clipboard.writeText(url).then(() => {
+        alert('✅ Ссылка скопирована!\n\n' + url + '\n\nОтправьте ее ученику.');
+    }).catch(() => {
+        const input = document.createElement('input');
+        input.value = url;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+        alert('✅ Ссылка скопирована!\n\n' + url + '\n\nОтправьте ее ученику.');
+    });
+}
+
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('modal')) {
+        e.target.classList.remove('active');
+    }
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+    const lessonSelect = document.getElementById('lessonServiceSelect');
+    if (lessonSelect) {
+        lessonSelect.addEventListener('change', updateLessonEnd);
+        updateLessonEnd();
+    }
+    
+    const editSelect = document.getElementById('editServiceId');
+    if (editSelect) {
+        editSelect.addEventListener('change', updateEditLessonEnd);
+    }
+    
+    const editStart = document.getElementById('editStart');
+    if (editStart) {
+        editStart.addEventListener('change', updateEditLessonEnd);
+    }
+    
+    const editBreak = document.getElementById('editBreakAfter');
+    if (editBreak) {
+        editBreak.addEventListener('change', function() {
+            document.getElementById('editUserEditedBreak').value = 'true';
+            updateEditLessonEnd();
+        });
+    }
+});
+</script>
+
+<?php elseif ($page === 'settings'): ?>
+<!-- ============ НАСТРОЙКИ ============ -->
+
+<?php
+// Определяем неделю для редактирования (берем из GET, если нет – текущую)
+$settingsWeekOffset = isset($_GET['week']) ? intval($_GET['week']) : 0;
+$settingsWeekDays = getWeekDays($settingsWeekOffset);
+$mondayStr = $settingsWeekDays[0]->format('Y-m-d');
+?>
+
+<div class="card">
+    <div class="card-title">
+        <span>⚙️ Настройка графика работы</span>
+        <span style="font-size:14px;font-weight:400;color:#64748b;">Неделя <?= $settingsWeekOffset + 1 ?> (<?= $mondayStr ?>)</span>
+    </div>
+
+    <!-- Навигация по неделям -->
+    <div class="week-navigation">
+        <a href="?action=settings&week=<?= $settingsWeekOffset - 1 ?>" class="week-nav-btn">← Предыдущая</a>
+        <span class="week-title"><?= getWeekTitle($settingsWeekDays) ?></span>
+        <a href="?action=settings&week=<?= $settingsWeekOffset + 1 ?>" class="week-nav-btn">Следующая →</a>
+    </div>
+
+    <form method="POST" action="?action=settings&week=<?= $settingsWeekOffset ?>">
+        <input type="hidden" name="action" value="save_schedule">
+        <input type="hidden" name="week_offset" value="<?= $settingsWeekOffset ?>">
+        
+        <div class="schedule-grid" style="grid-template-columns: 1fr 1fr; gap: 12px;">
+            <?php
+            // Определяем расписание для текущей недели
+            $weekSchedule = $data['tutor']['week_schedules'][$mondayStr] ?? $data['tutor']['work_schedule'];
+
+            // Строки таблицы: [левый_день, правый_день]
+            $rows = [
+                ['monday' => 'Понедельник', 'thursday' => 'Четверг'],
+                ['tuesday' => 'Вторник', 'friday' => 'Пятница'],
+                ['wednesday' => 'Среда', 'saturday' => 'Суббота'],
+                [null => null, 'sunday' => 'Воскресенье'] // воскресенье справа, слева пусто
+            ];
+
+            foreach ($rows as $row):
+                // Левый день
+                $leftKey = array_keys($row)[0];
+                $leftLabel = $row[$leftKey];
+                $leftSchedule = ($leftKey && isset($weekSchedule[$leftKey])) ? $weekSchedule[$leftKey] : ['active' => false, 'start' => '09:00', 'end' => '21:00'];
+                // Правый день
+                $rightKey = array_keys($row)[1];
+                $rightLabel = $row[$rightKey];
+                $rightSchedule = ($rightKey && isset($weekSchedule[$rightKey])) ? $weekSchedule[$rightKey] : ['active' => false, 'start' => '09:00', 'end' => '21:00'];
+            ?>
+            <div style="display: contents;">
+                <!-- Левая колонка -->
+                <div class="schedule-day" style="grid-column: 1; <?= $leftKey ? '' : 'opacity: 0.3; pointer-events: none;' ?>">
+                    <?php if ($leftKey): ?>
+                        <div class="day-title"><?= $leftLabel ?></div>
+                        <div class="day-checkbox">
+                            <input type="checkbox" name="<?= $leftKey ?>_active" id="<?= $leftKey ?>_active" <?= $leftSchedule['active'] ? 'checked' : '' ?>>
+                            <label for="<?= $leftKey ?>_active">Рабочий день</label>
+                        </div>
+                        <div class="day-time">
+                            <input type="time" name="<?= $leftKey ?>_start" value="<?= $leftSchedule['start'] ?>" step="300">
+                            <span>—</span>
+                            <input type="time" name="<?= $leftKey ?>_end" value="<?= $leftSchedule['end'] ?>" step="300">
+                        </div>
+                    <?php else: ?>
+                        <div class="day-title" style="color:#ccc;">—</div>
+                    <?php endif; ?>
+                </div>
+
+                <!-- Правая колонка -->
+                <div class="schedule-day" style="grid-column: 2; <?= $rightKey ? '' : 'opacity: 0.3; pointer-events: none;' ?>">
+                    <?php if ($rightKey): ?>
+                        <div class="day-title"><?= $rightLabel ?></div>
+                        <div class="day-checkbox">
+                            <input type="checkbox" name="<?= $rightKey ?>_active" id="<?= $rightKey ?>_active" <?= $rightSchedule['active'] ? 'checked' : '' ?>>
+                            <label for="<?= $rightKey ?>_active">Рабочий день</label>
+                        </div>
+                        <div class="day-time">
+                            <input type="time" name="<?= $rightKey ?>_start" value="<?= $rightSchedule['start'] ?>" step="300">
+                            <span>—</span>
+                            <input type="time" name="<?= $rightKey ?>_end" value="<?= $rightSchedule['end'] ?>" step="300">
+                        </div>
+                    <?php else: ?>
+                        <div class="day-title" style="color:#ccc;">—</div>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <?php endforeach; ?>
+        </div>
+        
+        <div style="margin-top:20px;">
+            <button type="submit" class="btn btn-primary">💾 Сохранить график для этой недели</button>
+            <span style="margin-left:16px;font-size:13px;color:#64748b;">Изменения применяются только к выбранной неделе</span>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <div class="card-title">
+        <span>ℹ️ Информация</span>
+    </div>
+    <ul style="color:#475569;line-height:1.8;padding-left:20px;">
+        <li>🟣 <strong>Фиолетово-синие ячейки (#8ba7e4)</strong> — уроки созданные учеником (не оплачены)</li>
+        <li>🔵 <strong>Голубые ячейки</strong> — уроки созданные репетитором (не оплачены)</li>
+        <li>🟢 <strong>Зеленые ячейки</strong> — уроки (оплачены)</li>
+        <li>🔴 <strong>Красные ячейки</strong> — занято (не ученик)</li>
+        <li>⚪ <strong>Серые ячейки</strong> — нерабочее время или выходной</li>
+        <li>⏱️ <strong>Шаг в календаре</strong> — 15 минут</li>
+        <li>⏱️ <strong>Шаг в формах создания/редактирования</strong> — 5 минут</li>
+        <li>➕ <strong>Клик по свободному времени</strong> — создать урок</li>
+        <li>👆 <strong>Клик по уроку</strong> — просмотр и редактирование</li>
+        <li><strong>📅 Расписание настраивается понедельно</strong> — изменения на одной неделе не влияют на другие.</li>
+    </ul>
+</div>
+
+<?php elseif ($page === 'services'): ?>
+<!-- ============ УСЛУГИ ============ -->
+
+<div class="card">
+    <div class="card-title">
+        <span>📋 Управление услугами</span>
+    </div>
+    
+    <?php foreach ($data['tutor']['services'] as $service): ?>
+    <div class="service-item">
+        <div class="service-info">
+            <strong><?= $service['name'] ?></strong> — <?= $service['duration'] ?> мин, <?= $service['price'] ?> ₽, перерыв <?= $service['break_after'] ?> мин
+        </div>
+        <div class="service-actions">
+            <button class="btn btn-primary btn-sm" onclick="editService(<?= $service['id'] ?>, '<?= $service['name'] ?>', <?= $service['duration'] ?>, <?= $service['price'] ?>, <?= $service['break_after'] ?>)">✏️</button>
+            <form method="POST" class="inline-form">
+                <input type="hidden" name="action" value="delete_service">
+                <input type="hidden" name="service_id" value="<?= $service['id'] ?>">
+                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Удалить услугу?')">✕</button>
+            </form>
+        </div>
+    </div>
+    <?php endforeach; ?>
+    
+    <details style="margin-top:12px;">
+        <summary style="cursor:pointer;color:#3b82f6;">➕ Добавить услугу</summary>
+        <form method="POST" style="margin-top:12px;">
+            <input type="hidden" name="action" value="add_service">
+            <div class="form-row">
+                <label>Название</label>
+                <input type="text" name="name" required>
+            </div>
+            <div class="form-row">
+                <label>Длительность (мин)</label>
+                <input type="number" name="duration" value="60" required>
+            </div>
+            <div class="form-row">
+                <label>Стоимость (₽)</label>
+                <input type="number" name="price" value="1500" required>
+            </div>
+            <div class="form-row">
+                <label>Перерыв после (мин)</label>
+                <input type="number" name="break_after" value="10" required>
+            </div>
+            <button type="submit" class="btn btn-success">Добавить</button>
+        </form>
+    </details>
+</div>
+
+<!-- Модальное окно редактирования услуги -->
+<div class="modal" id="editServiceModal">
+    <div class="modal-content">
+        <button class="close-btn" onclick="closeEditServiceModal()">×</button>
+        <h3 style="margin-bottom:16px;">✏️ Редактировать услугу</h3>
+        <form method="POST" id="editServiceForm">
+            <input type="hidden" name="action" value="edit_service">
+            <input type="hidden" name="service_id" id="editServiceId">
+            <div class="form-row">
+                <label>Название</label>
+                <input type="text" name="name" id="editServiceName" required>
+            </div>
+            <div class="form-row">
+                <label>Длительность (мин)</label>
+                <input type="number" name="duration" id="editServiceDuration" required>
+            </div>
+            <div class="form-row">
+                <label>Стоимость (₽)</label>
+                <input type="number" name="price" id="editServicePrice" required>
+            </div>
+            <div class="form-row">
+                <label>Перерыв после (мин)</label>
+                <input type="number" name="break_after" id="editServiceBreak" required>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;">Сохранить</button>
+        </form>
+    </div>
+</div>
+
+<script>
+function editService(id, name, duration, price, breakAfter) {
+    document.getElementById('editServiceId').value = id;
+    document.getElementById('editServiceName').value = name;
+    document.getElementById('editServiceDuration').value = duration;
+    document.getElementById('editServicePrice').value = price;
+    document.getElementById('editServiceBreak').value = breakAfter;
+    document.getElementById('editServiceModal').classList.add('active');
+}
+
+function closeEditServiceModal() {
+    document.getElementById('editServiceModal').classList.remove('active');
+}
+
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('modal')) {
+        e.target.classList.remove('active');
+    }
+});
+</script>
+
+<?php elseif ($page === 'students'): ?>
+<!-- ============ УЧЕНИКИ ============ -->
+
+<div class="card">
+    <div class="card-title">👥 Ученики</div>
+    
+    <?php if ($subpage === 'view' && $viewStudentId && isset($data['tutor']['students'][$viewStudentId])): 
+        $student = $data['tutor']['students'][$viewStudentId];
+        $publicLink = $siteUrl . $scriptName . '?action=student_view&id=' . $viewStudentId;
+    ?>
+    <div style="margin-bottom:16px;">
+        <a href="?action=students" class="btn btn-secondary btn-sm">← Назад к списку</a>
+    </div>
+    
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 20px;">
+        <div style="background: #f8fafc; padding: 12px 16px; border-radius: 12px;">
+            <label style="font-size: 12px; color: #64748b; display: block;">Имя</label>
+            <div style="font-size: 18px; font-weight: 600; color: #1a2a3a;"><?= $student['name'] ?></div>
+        </div>
+        <div style="background: #f8fafc; padding: 12px 16px; border-radius: 12px;">
+            <label style="font-size: 12px; color: #64748b; display: block;">Телефон</label>
+            <div style="font-size: 18px; font-weight: 600; color: #1a2a3a;"><?= $student['phone'] ?></div>
+        </div>
+        <div style="background: #f8fafc; padding: 12px 16px; border-radius: 12px;">
+            <label style="font-size: 12px; color: #64748b; display: block;">💰 Баланс</label>
+            <div style="font-size: 24px; font-weight: 700; color: #22c55e;"><?= number_format($student['balance'], 2) ?> ₽</div>
+        </div>
+        <div style="background: #f8fafc; padding: 12px 16px; border-radius: 12px;">
+            <label style="font-size: 12px; color: #64748b; display: block;">Стоимость часа</label>
+            <div style="font-size: 18px; font-weight: 600; color: #1a2a3a;"><?= $student['price_per_hour'] ?? 1500 ?> ₽</div>
+        </div>
+        <div style="background: #f8fafc; padding: 12px 16px; border-radius: 12px;">
+            <label style="font-size: 12px; color: #64748b; display: block;">Скидка</label>
+            <div style="font-size: 18px; font-weight: 600; color: #1a2a3a;"><?= $student['discount'] ?? 0 ?>%</div>
+        </div>
+        <div style="background: #f8fafc; padding: 12px 16px; border-radius: 12px;">
+            <label style="font-size: 12px; color: #64748b; display: block;">Всего занятий</label>
+            <div style="font-size: 18px; font-weight: 600; color: #1a2a3a;"><?= count($student['records'] ?? []) ?></div>
+        </div>
+    </div>
+    
+    <!-- Ссылка для ученика -->
+    <div style="margin: 16px 0; padding: 16px; background: #f0f7ff; border-radius: 12px; border: 1px solid #bfdbfe;">
+        <h4 style="margin-bottom:8px;color:#1a3a5a;">🔗 Ссылка для ученика</h4>
+        <p style="font-size:13px;color:#475569;margin-bottom:8px;">Отправьте эту ссылку ученику. Он сможет видеть свои занятия, статус оплаты и записываться на новые уроки.</p>
+        <div class="share-link-container">
+            <input type="text" id="studentPublicLink" value="<?= $publicLink ?>" readonly onclick="this.select()">
+            <button class="btn btn-primary" onclick="copyStudentLink('<?= $viewStudentId ?>')">📋 Копировать</button>
+        </div>
+    </div>
+    
+    <div style="margin: 16px 0; padding: 16px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;">
+        <h4 style="margin-bottom:8px;">💰 Управление балансом (Абонемент)</h4>
+        <div class="balance-control">
+            <form method="POST" style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; width:100%;">
+                <input type="hidden" name="action" value="update_balance">
+                <input type="hidden" name="student_id" value="<?= $viewStudentId ?>">
+                <label style="font-weight:500;">Сумма:</label>
+                <input type="number" name="amount" step="0.01" value="1000" required style="width:120px;">
+                <button type="submit" name="operation" value="add" class="btn btn-success">➕ Пополнить</button>
+                <button type="submit" name="operation" value="subtract" class="btn btn-danger">➖ Списать</button>
+            </form>
+        </div>
+        <div style="font-size:13px;color:#64748b;margin-top:4px;">
+            💡 При оплате урока деньги списываются автоматически. При отмене оплаты - возвращаются.
+        </div>
+    </div>
+    
+    <details style="margin:12px 0;">
+        <summary style="cursor:pointer;color:#3b82f6;">✏️ Редактировать профиль</summary>
+        <form method="POST" style="margin-top:12px;">
+            <input type="hidden" name="action" value="update_student">
+            <input type="hidden" name="student_id" value="<?= $viewStudentId ?>">
+            <div class="form-row">
+                <label>Имя</label>
+                <input type="text" name="name" value="<?= $student['name'] ?>" required>
+            </div>
+            <div class="form-row">
+                <label>Телефон</label>
+                <input type="text" name="phone" value="<?= $student['phone'] ?>" required>
+            </div>
+            <div class="form-row">
+                <label>Стоимость часа (₽)</label>
+                <input type="number" name="price_per_hour" value="<?= $student['price_per_hour'] ?? 1500 ?>" required>
+            </div>
+            <div class="form-row">
+                <label>Скидка (%)</label>
+                <input type="number" name="discount" value="<?= $student['discount'] ?? 0 ?>" min="0" max="100">
+            </div>
+<?php foreach ($data['tutor']['services'] as $s): 
+    $currentPrice = $student['student_prices'][$s['id']] ?? '';
+?>
+<div class="form-row">
+    <label><?= $s['name'] ?> (<?= $s['duration'] ?> мин)</label>
+    <input type="number" name="price_<?= $s['id'] ?>" value="<?= $currentPrice ?>" step="0.01" placeholder="Общая: <?= $s['price'] ?>">
+</div>
+<?php endforeach; ?>
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+        </form>
+    </details>
+    
+    <div style="margin-top:20px;">
+        <h4 style="margin-bottom:12px;">📋 История занятий</h4>
+        <?php 
+        $studentLessons = [];
+        foreach ($data['tutor']['events'] as $event) {
+            if ($event['type'] === 'lesson' && $event['student_id'] === $viewStudentId) {
+                $serviceName = '';
+                $price = 0;
+                foreach ($data['tutor']['services'] as $s) {
+                    if ($s['id'] == $event['service_id']) {
+                        $serviceName = $s['name'];
+                        $price = $s['price'];
+                        break;
+                    }
+                }
+                $studentLessons[] = [
+                    'event_id' => $event['id'],
+                    'date' => $event['date'],
+                    'start' => $event['start'],
+                    'end' => $event['end'],
+                    'service' => $serviceName,
+                    'price' => $price,
+                    'status' => $event['status'],
+                    'paid' => $event['paid'],
+                    'break_after' => $event['break_after'] ?? 0,
+                    'created_by' => $event['created_by'] ?? 'tutor'
+                ];
+            }
+        }
+        usort($studentLessons, function($a, $b) {
+            return strcmp($a['date'] . $a['start'], $b['date'] . $b['start']);
+        });
+        ?>
+        
+        <?php if (empty($studentLessons)): ?>
+        <p style="color:#64748b;">У ученика пока нет занятий</p>
+        <?php else: ?>
+        <div style="overflow-x:auto;">
+        <table class="records-table">
+            <thead>
+                <tr><th>Дата</th><th>Время</th><th>Услуга</th><th>Стоимость</th><th>Перерыв</th><th>Кто записал</th><th>Статус</th><th>Оплата</th></tr>
+            </thead>
+            <tbody>
+                <?php foreach ($studentLessons as $record): ?>
+                <tr>
+                    <td><?= $record['date'] ?></td>
+                    <td><?= $record['start'] ?? '' ?>-<?= $record['end'] ?? '' ?></td>
+                    <td><?= $record['service'] ?></td>
+                    <td><?= $record['price'] ?> ₽</td>
+                    <td><?= ($record['break_after'] ?? 0) > 0 ? $record['break_after'] . ' мин' : '—' ?></td>
+                    <td><?= ($record['created_by'] ?? 'tutor') === 'student' ? '👤 Ученик' : '👩‍🏫 Репетитор' ?></td>
+                    <td>
+                        <?php if ($record['status'] === 'booked'): ?>Забронирован
+                        <?php elseif ($record['status'] === 'completed'): ?>✅ Проведен
+                        <?php elseif ($record['status'] === 'cancelled'): ?>❌ Отменен
+                        <?php else: ?><?= $record['status'] ?>
+                        <?php endif; ?>
+                    </td>
+                    <td>
+                        <?php if ($record['paid']): ?>
+                        <span class="paid">✅ Оплачено</span>
+                        <form method="POST" style="display:inline;">
+                            <input type="hidden" name="action" value="toggle_paid">
+                            <input type="hidden" name="event_id" value="<?= $record['event_id'] ?>">
+                            <input type="hidden" name="paid" value="false">
+                            <button type="submit" class="btn btn-danger btn-sm" style="margin-top:4px;">Отменить</button>
+                        </form>
+                        <?php else: ?>
+                        <span class="unpaid">❌ Не оплачено</span>
+                        <form method="POST" style="display:inline;">
+                            <input type="hidden" name="action" value="toggle_paid">
+                            <input type="hidden" name="event_id" value="<?= $record['event_id'] ?>">
+                            <input type="hidden" name="paid" value="true">
+                            <button type="submit" class="btn btn-success btn-sm" style="margin-top:4px;">Оплатить</button>
+                        </form>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+        </div>
+        <?php endif; ?>
+    </div>
+    
+    <?php else: ?>
+    <div class="student-list">
+        <?php foreach ($data['tutor']['students'] as $id => $student): ?>
+        <div class="student-card">
+            <div>
+                <div class="name"><?= $student['name'] ?></div>
+                <div class="phone"><?= $student['phone'] ?></div>
+                <div class="balance">💰 <?= number_format($student['balance'], 2) ?> ₽</div>
+                <div style="font-size:12px;color:#64748b;">Занятий: <?= count($student['records'] ?? []) ?></div>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:4px;">
+                <a href="?action=students&sub=view&student_id=<?= $id ?>" class="view-link">📂 Личный кабинет</a>
+                <form method="POST" style="display:inline;">
+                    <input type="hidden" name="action" value="delete_student">
+                    <input type="hidden" name="student_id" value="<?= $id ?>">
+                    <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Удалить ученика?')">✕</button>
+                </form>
+            </div>
+        </div>
+        <?php endforeach; ?>
+    </div>
+    
+    <details style="margin-top:12px;">
+        <summary style="cursor:pointer;color:#3b82f6;">➕ Добавить ученика</summary>
+        <form method="POST" style="margin-top:12px;">
+            <input type="hidden" name="action" value="add_student">
+            <div class="form-row">
+                <label>Имя</label>
+                <input type="text" name="name" required>
+            </div>
+            <div class="form-row">
+                <label>Телефон</label>
+                <input type="text" name="phone" required>
+            </div>
+            <div class="form-row">
+                <label>Начальный баланс (₽)</label>
+                <input type="number" name="balance" value="0" step="0.01">
+            </div>
+            <div class="form-row">
+                <label>Стоимость часа (₽)</label>
+                <input type="number" name="price_per_hour" value="1500">
+            </div>
+            <div class="form-row">
+                <label>Скидка (%)</label>
+                <input type="number" name="discount" value="0" min="0" max="100">
+            </div>
+            <button type="submit" class="btn btn-success">Добавить</button>
+        </form>
+    </details>
+    <?php endif; ?>
+</div>
+
+<?php endif; ?>
+
+</div>
+
 </body>
 </html>
