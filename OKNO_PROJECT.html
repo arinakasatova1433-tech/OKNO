@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OKNO — Презентация проекта</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+        overflow: hidden;
+        height: 100vh;
+    }
+
+    /* Слайды */
+    .slide {
+        display: none;
+        width: 100vw;
+        height: 100vh;
+        padding: 50px 80px;
+        flex-direction: column;
+        justify-content: center;
+        position: absolute;
+        top: 0;
+        left: 0;
+        opacity: 0;
+        transition: opacity 0.35s ease;
+        overflow-y: auto;
+    }
+    .slide.active { display: flex; opacity: 1; }
+
+    /* Слайд-титул */
+    .slide-1 {
+        background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
+        text-align: center;
+        align-items: center;
+    }
+    .slide-1 .logo {
+        font-size: 110px;
+        font-weight: 900;
+        letter-spacing: -4px;
+        background: linear-gradient(90deg, #60a5fa, #a78bfa);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 16px;
+        line-height: 1;
+    }
+    .slide-1 .subtitle {
+        font-size: 20px;
+        color: #94a3b8;
+        margin-bottom: 40px;
+    }
+    .slide-1 .badge-top {
+        display: inline-block;
+        background: rgba(96,165,250,0.15);
+        color: #93c5fd;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+        padding: 8px 18px;
+        border-radius: 999px;
+        margin-bottom: 24px;
+        border: 1px solid rgba(96,165,250,0.3);
+    }
+
+    /* Слайд-разделитель */
+    .slide-divider {
+        background: linear-gradient(135deg, #0f172a 0%, #5b21b6 100%);
+        text-align: center;
+        align-items: center;
+    }
+    .slide-divider .divider-num {
+        font-size: 120px;
+        font-weight: 900;
+        line-height: 1;
+        color: rgba(255,255,255,0.08);
+        letter-spacing: -4px;
+        margin-bottom: 10px;
+    }
+    .slide-divider .divider-title {
+        font-size: 56px;
+        font-weight: 800;
+        color: #ffffff;
+        margin-bottom: 16px;
+        letter-spacing: -1px;
+    }
+    .slide-divider .divider-sub {
+        font-size: 18px;
+        color: #c4b5fd;
+        max-width: 600px;
+    }
+
+    /* Обычный слайд */
+    .slide-header { margin-bottom: 30px; }
+    .slide-number {
+        font-size: 12px;
+        font-weight: 700;
+        color: #60a5fa;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+        margin-bottom: 10px;
+    }
+    .slide-title {
+        font-size: 40px;
+        font-weight: 800;
+        line-height: 1.1;
+        color: #f1f5f9;
+    }
+    .slide-body { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+
+    /* Слайд «Название» */
+    .big-name {
+        font-size: 72px;
+        font-weight: 900;
+        line-height: 1;
+        letter-spacing: -3px;
+        background: linear-gradient(90deg, #60a5fa, #a78bfa);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 16px;
+    }
+    .big-name-sub {
+        font-size: 24px;
+        color: #94a3b8;
+        line-height: 1.4;
+    }
+
+    /* Карточки */
+    .card-dark {
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(96,165,250,0.2);
+        border-radius: 18px;
+        padding: 26px 32px;
+    }
+    .card-dark.accent-yellow { border-left: 4px solid #f59e0b; }
+    .card-dark.accent-blue { border-left: 4px solid #3b82f6; }
+    .card-dark.accent-green { border-left: 4px solid #22c55e; }
+    .card-dark.accent-purple { border-left: 4px solid #a78bfa; }
+
+    .goal-text {
+        font-size: 20px;
+        line-height: 1.6;
+        color: #f1f5f9;
+    }
+    .goal-text strong { color: #60a5fa; }
+
+    /* SMART */
+    .smart-grid {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 12px;
+        margin-top: 24px;
+    }
+    .smart-item {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(96,165,250,0.15);
+        border-radius: 12px;
+        padding: 16px 8px;
+        text-align: center;
+    }
+    .smart-letter {
+        font-size: 28px;
+        font-weight: 900;
+        color: #60a5fa;
+        line-height: 1;
+        margin-bottom: 6px;
+    }
+    .smart-label {
+        font-size: 11px;
+        color: #94a3b8;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    /* Роли */
+    .roles {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+    }
+    .role {
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(96,165,250,0.15);
+        border-radius: 14px;
+        padding: 22px 26px;
+    }
+    .role-label {
+        font-size: 11px;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
+        font-weight: 700;
+        margin-bottom: 8px;
+    }
+    .role-value {
+        font-size: 18px;
+        font-weight: 600;
+        color: #f1f5f9;
+        line-height: 1.4;
+    }
+    .role-value.empty {
+        color: #475569;
+        font-style: italic;
+        font-weight: 400;
+    }
+
+    /* Ценностное предложение */
+    .value-prop {
+        font-size: 18px;
+        line-height: 1.9;
+        color: #cbd5e1;
+    }
+    .value-prop .hl {
+        font-weight: 700;
+        color: #ffffff;
+        background: rgba(59,130,246,0.3);
+        padding: 2px 8px;
+        border-radius: 6px;
+    }
+    .value-prop .hl-green {
+        font-weight: 700;
+        color: #dcfce7;
+        background: rgba(34,197,94,0.25);
+        padding: 2px 8px;
+        border-radius: 6px;
+    }
+    .value-prop .hl-orange {
+        font-weight: 700;
+        color: #fef3c7;
+        background: rgba(245,158,11,0.25);
+        padding: 2px 8px;
+        border-radius: 6px;
+    }
+
+    /* Продукт */
+    .product-badge {
+        display: inline-block;
+        background: rgba(34,197,94,0.2);
+        color: #86efac;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        padding: 6px 14px;
+        border-radius: 999px;
+        margin-bottom: 16px;
+        border: 1px solid rgba(34,197,94,0.4);
+    }
+    .feature-list {
+        list-style: none;
+        margin-top: 16px;
+    }
+    .feature-list li {
+        padding: 10px 0 10px 32px;
+        position: relative;
+        font-size: 16px;
+        color: #e2e8f0;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .feature-list li:last-child { border-bottom: none; }
+    .feature-list li::before {
+        content: '✓';
+        position: absolute;
+        left: 0;
+        top: 10px;
+        width: 20px;
+        height: 20px;
+        background: #22c55e;
+        color: #ffffff;
+        border-radius: 50%;
+        font-size: 12px;
+        font-weight: 900;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .tech-note {
+        margin-top: 18px;
+        font-size: 14px;
+        color: #94a3b8;
+        padding: 12px 16px;
+        background: rgba(255,255,255,0.04);
+        border-radius: 10px;
+        border-left: 3px solid #64748b;
+        line-height: 1.5;
+    }
+    .tech-note strong { color: #cbd5e1; }
+
+    /* Задачи */
+    .tasks-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+    }
+    .task {
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(96,165,250,0.15);
+        border-radius: 12px;
+        padding: 16px 20px;
+    }
+    .task-num {
+        width: 32px;
+        height: 32px;
+        background: #3b82f6;
+        color: #ffffff;
+        border-radius: 8px;
+        font-weight: 800;
+        font-size: 15px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+    .task-text {
+        font-size: 14px;
+        color: #e2e8f0;
+        line-height: 1.5;
+        padding-top: 5px;
+    }
+    .task-text strong { color: #93c5fd; }
+
+    /* Микро-шаги */
+    .micro-steps { display: flex; flex-direction: column; gap: 14px; }
+    .micro-step {
+        display: flex;
+        gap: 18px;
+        align-items: center;
+        background: rgba(96,165,250,0.08);
+        border: 1px solid rgba(96,165,250,0.25);
+        border-radius: 14px;
+        padding: 20px 24px;
+    }
+    .micro-icon {
+        font-size: 32px;
+        flex-shrink: 0;
+        line-height: 1;
+    }
+    .micro-text {
+        font-size: 16px;
+        color: #f1f5f9;
+        line-height: 1.5;
+        flex: 1;
+    }
+    .micro-time {
+        display: inline-block;
+        background: #3b82f6;
+        color: #ffffff;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 4px 12px;
+        border-radius: 8px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        white-space: nowrap;
+    }
+
+    /* CustDev */
+    .respondents-info {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+        margin-bottom: 20px;
+    }
+    .resp-stat {
+        background: rgba(167,139,250,0.1);
+        border: 1px solid rgba(167,139,250,0.3);
+        border-radius: 14px;
+        padding: 20px;
+        text-align: center;
+    }
+    .resp-stat-value {
+        font-size: 42px;
+        font-weight: 800;
+        color: #c4b5fd;
+        line-height: 1;
+        margin-bottom: 8px;
+    }
+    .resp-stat-label {
+        font-size: 12px;
+        color: #94a3b8;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    /* Вопросы */
+    .block-question { margin-bottom: 18px; }
+    .block-question:last-child { margin-bottom: 0; }
+    .block-title {
+        display: inline-block;
+        background: #7c3aed;
+        color: #ffffff;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+        padding: 5px 14px;
+        border-radius: 999px;
+        margin-bottom: 10px;
+    }
+    .question {
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+        padding: 10px 14px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(167,139,250,0.15);
+        border-radius: 10px;
+        margin-bottom: 8px;
+        font-size: 14px;
+        color: #e2e8f0;
+        line-height: 1.5;
+    }
+    .q-num {
+        width: 24px;
+        height: 24px;
+        background: rgba(167,139,250,0.3);
+        color: #c4b5fd;
+        border-radius: 6px;
+        font-weight: 800;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+
+    /* Таблица */
+    .insights-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+    .insights-table thead th {
+        background: rgba(255,255,255,0.08);
+        padding: 12px 14px;
+        text-align: left;
+        font-weight: 700;
+        color: #cbd5e1;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        border-bottom: 2px solid rgba(96,165,250,0.3);
+    }
+    .insights-table tbody td {
+        padding: 12px 14px;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+        vertical-align: top;
+        line-height: 1.5;
+        color: #e2e8f0;
+    }
+    .insights-table tbody tr:last-child td { border-bottom: none; }
+    .status {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 8px;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        white-space: nowrap;
+    }
+    .status-confirmed { background: rgba(34,197,94,0.2); color: #86efac; }
+    .status-refuted { background: rgba(239,68,68,0.2); color: #fca5a5; }
+    .status-unclear { background: rgba(245,158,11,0.2); color: #fcd34d; }
+
+    .honest-note {
+        margin-top: 16px;
+        padding: 14px 18px;
+        background: rgba(167,139,250,0.1);
+        border-left: 3px solid #a78bfa;
+        border-radius: 10px;
+        font-size: 14px;
+        color: #cbd5e1;
+        line-height: 1.5;
+    }
+    .honest-note strong { color: #c4b5fd; }
+
+    /* Что работал */
+    .who-info {
+        font-size: 18px;
+        line-height: 1.8;
+        color: #e2e8f0;
+    }
+    .who-list {
+        list-style: none;
+        margin-top: 16px;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+    }
+    .who-list li {
+        background: rgba(167,139,250,0.12);
+        border: 1px solid rgba(167,139,250,0.25);
+        border-radius: 12px;
+        padding: 18px 20px;
+        font-size: 15px;
+        color: #e2e8f0;
+        text-align: center;
+    }
+
+    /* Навигация */
+    .nav {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        background: rgba(15,23,42,0.92);
+        padding: 10px 18px;
+        border-radius: 999px;
+        border: 1px solid rgba(96,165,250,0.25);
+        backdrop-filter: blur(10px);
+        z-index: 100;
+    }
+    .nav-btn {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        border: none;
+        background: rgba(96,165,250,0.15);
+        color: #60a5fa;
+        font-size: 20px;
+        cursor: pointer;
+        transition: 0.2s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .nav-btn:hover { background: rgba(96,165,250,0.3); color: #93c5fd; }
+    .nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+    .nav-dots { display: flex; gap: 6px; }
+    .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: rgba(148,163,184,0.4);
+        cursor: pointer;
+        transition: 0.2s;
+    }
+    .dot.active { background: #60a5fa; width: 24px; border-radius: 4px; }
+    .slide-counter {
+        font-size: 13px;
+        color: #94a3b8;
+        font-weight: 600;
+        min-width: 48px;
+        text-align: center;
+    }
+
+    @media (max-width: 768px) {
+        .slide { padding: 30px 20px; }
+        .slide-1 .logo { font-size: 72px; }
+        .slide-title { font-size: 26px; }
+        .big-name { font-size: 48px; }
+        .big-name-sub { font-size: 18px; }
+        .divider-title { font-size: 32px; }
+        .divider-num { font-size: 80px; }
+        .roles { grid-template-columns: 1fr; }
+        .smart-grid { grid-template-columns: repeat(3, 1fr); }
+        .tasks-grid { grid-template-columns: 1fr; }
+        .respondents-info { grid-template-columns: 1fr; }
+        .who-list { grid-template-columns: 1fr; }
+        .goal-text { font-size: 16px; }
+        .value-prop { font-size: 15px; }
+        .insights-table { font-size: 11px; }
+        .insights-table thead th,
+        .insights-table tbody td { padding: 8px; }
+        .micro-text { font-size: 14px; }
+        .card-dark { padding: 20px; }
+    }
+</style>
+</head>
+<body>
+
+<!-- СЛАЙД 1: ТИТУЛ -->
+<div class="slide slide-1 active" data-slide="0">
+    <div class="badge-top">Управление проектами · 2026</div>
+    <div class="logo">OKNO</div>
+    <div class="subtitle">План реализации проекта и проведение CustDev</div>
+</div>
+
+<!-- СЛАЙД 2: РАЗДЕЛИТЕЛЬ Часть 1 -->
+<div class="slide slide-divider" data-slide="1">
+    <div class="divider-num">01</div>
+    <div class="divider-title">План реализации проекта</div>
+    <div class="divider-sub">Цель, роли, ценностное предложение и декомпозиция задач</div>
+</div>
+
+<!-- СЛАЙД 3: Название -->
+<div class="slide" data-slide="2">
+    <div class="slide-header">
+        <div class="slide-number">01 · Рабочее название</div>
+    </div>
+    <div class="slide-body">
+        <div class="big-name">OKNO</div>
+        <div class="big-name-sub">Веб-приложение для управления занятиями и онлайн-записи для частных репетиторов</div>
+    </div>
+</div>
+
+<!-- СЛАЙД 4: SMART -->
+<div class="slide" data-slide="3">
+    <div class="slide-header">
+        <div class="slide-number">02 · Продуктовая цель</div>
+        <div class="slide-title">SMART-цель</div>
+    </div>
+    <div class="slide-body">
+        <div class="card-dark accent-yellow">
+            <div class="goal-text">
+                <strong>К 1 ноября 2026 года</strong> завершить точечные доработки веб-приложения OKNO
+                (календарь, услуги, ученики, онлайн-запись, учёт абонементов и оплат) и обеспечить
+                его стабильное использование <strong>3 частными репетиторами</strong> с обратной связью
+                по найденным багам.
+            </div>
+            <div class="smart-grid">
+                <div class="smart-item"><div class="smart-letter">S</div><div class="smart-label">Конкретно</div></div>
+                <div class="smart-item"><div class="smart-letter">M</div><div class="smart-label">Измеримо</div></div>
+                <div class="smart-item"><div class="smart-letter">A</div><div class="smart-label">Достижимо</div></div>
+                <div class="smart-item"><div class="smart-letter">R</div><div class="smart-label">Значимо</div></div>
+                <div class="smart-item"><div class="smart-letter">T</div><div class="smart-label">1.11.2026</div></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- СЛАЙД 5: Роли -->
+<div class="slide" data-slide="4">
+    <div class="slide-header">
+        <div class="slide-number">03 · Команда</div>
+        <div class="slide-title">Роли в команде</div>
+    </div>
+    <div class="slide-body">
+        <div class="roles">
+            <div class="role">
+                <div class="role-label">Заказчик</div>
+                <div class="role-value empty">— (не указан)</div>
+            </div>
+            <div class="role">
+                <div class="role-label">Клиент / Пользователь</div>
+                <div class="role-value">Частные репетиторы (5–20 учеников), а также их ученики (записываются онлайн)</div>
+            </div>
+            <div class="role" style="grid-column: 1 / -1;">
+                <div class="role-label">Владелец продукта</div>
+                <div class="role-value">Корнев Владимир Николаевич</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- СЛАЙД 6: Ценностное предложение -->
+<div class="slide" data-slide="5">
+    <div class="slide-header">
+        <div class="slide-number">04 · Ценность</div>
+        <div class="slide-title">Ценностное предложение</div>
+    </div>
+    <div class="slide-body">
+        <div class="card-dark accent-blue">
+            <div class="value-prop">
+                Для <span class="hl">частных репетиторов</span>, которые
+                <span class="hl-orange">ведут расписание и учёт оплат вручную (мессенджеры,
+                Google Календарь, Excel)</span>, наше
+                <span class="hl">OKNO — веб-приложение с календарём и онлайн-записью учеников</span>
+                позволяет <span class="hl-green">сократить время на согласование занятий и исключить
+                путаницу с оплатами и абонементами</span>, в отличие от
+                <span class="hl-orange">Google Календаря и Excel, которые не связаны между собой
+                и требуют ручной синхронизации</span>.
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- СЛАЙД 7: Продукт -->
+<div class="slide" data-slide="6">
+    <div class="slide-header">
+        <div class="slide-number">05 · Продукт</div>
+        <div class="slide-title">Описание продукта</div>
+    </div>
+    <div class="slide-body">
+        <div class="card-dark accent-green">
+            <div class="product-badge">Веб-приложение уже создано · готовность ~90%</div>
+            <div style="font-size:16px; color:#e2e8f0; line-height:1.6;">
+                Создано <strong style="color:#93c5fd;">веб-приложение OKNO</strong> — работающее и проходящее тестирование
+                репетиторами. Веб-версия с регистрацией и всем функционалом. Куплен хостинг и домен.
+            </div>
+            <ul class="feature-list">
+                <li>Календарь на неделю с визуализацией занятости и перерывов</li>
+                <li>Услуги (название, длительность, перерыв)</li>
+                <li>Ученики (карточка, баланс, история занятий, ссылка на онлайн-запись)</li>
+                <li>Онлайн-запись по персональной ссылке + автосписание с баланса</li>
+                <li>Учёт абонементов и оплат (история платежей, задолженности)</li>
+            </ul>
+            <div class="tech-note">
+                <strong>Технически:</strong> PHP-хостинг + JSON-файлы как хранилище. Идут точечные доработки и исправление багов по обратной связи от 4 репетиторов.
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- СЛАЙД 8: Задачи -->
+<div class="slide" data-slide="7">
+    <div class="slide-header">
+        <div class="slide-number">06 · Декомпозиция</div>
+        <div class="slide-title">Задачи проекта</div>
+    </div>
+    <div class="slide-body">
+        <div class="tasks-grid">
+            <div class="task">
+                <div class="task-num">1</div>
+                <div class="task-text"><strong>Проведён CustDev</strong> — 3 интервью, протокол и таблица инсайтов</div>
+            </div>
+            <div class="task">
+                <div class="task-num">2</div>
+                <div class="task-text"><strong>Тестируют 4 репетитора</strong> — выявлены баги, собрана обратная связь</div>
+            </div>
+            <div class="task">
+                <div class="task-num">3</div>
+                <div class="task-text"><strong>Функционал разработан</strong> — 5 модулей работают</div>
+            </div>
+            <div class="task">
+                <div class="task-num">4</div>
+                <div class="task-text"><strong>Настроены хостинг и домен</strong> — публичная ссылка, регистрация</div>
+            </div>
+            <div class="task">
+                <div class="task-num">5</div>
+                <div class="task-text"><strong>Устранены баги</strong> — все критичные замечания закрыты</div>
+            </div>
+            <div class="task">
+                <div class="task-num">6</div>
+                <div class="task-text"><strong>Написана инструкция</strong> — пошаговое руководство по OKNO</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- СЛАЙД 9: Микро-шаги -->
+<div class="slide" data-slide="8">
+    <div class="slide-header">
+        <div class="slide-number">07 · Правило 5 минут</div>
+        <div class="slide-title">Первые 3 микро-шага</div>
+    </div>
+    <div class="slide-body">
+        <div class="micro-steps">
+            <div class="micro-step">
+                <div class="micro-icon">💬</div>
+                <div class="micro-text">Написать 1 тестирующему репетитору в Telegram — какие баги нашёл за неделю</div>
+                <div class="micro-time">5 мин</div>
+            </div>
+            <div class="micro-step">
+                <div class="micro-icon">🐛</div>
+                <div class="micro-text">Завести задачу в трекере на первый баг и назначить ответственного</div>
+                <div class="micro-time">5 мин</div>
+            </div>
+            <div class="micro-step">
+                <div class="micro-icon">📝</div>
+                <div class="micro-text">Черновик структуры инструкции — 5 разделов (календарь, услуги, ученики, запись, оплаты)</div>
+                <div class="micro-time">5 мин</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- СЛАЙД 10: Разделитель Часть 2 -->
+<div class="slide slide-divider" data-slide="9">
+    <div class="divider-num">02</div>
+    <div class="divider-title">Проведение CustDev</div>
+    <div class="divider-sub">Исследование клиентов: скрипт, сбор данных и анализ инсайтов</div>
+</div>
+
+<!-- СЛАЙД 11: Кто работал -->
+<div class="slide" data-slide="10">
+    <div class="slide-header">
+        <div class="slide-number">CustDev · Кто работал</div>
+        <div class="slide-title">Как проводили исследование</div>
+    </div>
+    <div class="slide-body">
+        <div class="card-dark accent-purple">
+            <div class="who-info">
+                Исследование проведено <strong style="color:#c4b5fd;">индивидуально</strong> — проект выполняет один человек.
+                Все интервью проводил один исследователь, без пары «интервьюер + протоколист».
+            </div>
+            <ul class="who-list">
+                <li>💬 Переписка<br><strong>ВКонтакте</strong></li>
+                <li>✈️ Переписка<br><strong>Telegram</strong></li>
+                <li>🤝 Личная<br><strong>встреча</strong></li>
+            </ul>
+        </div>
+    </div>
+</div>
+
+<!-- СЛАЙД 12: Скрипт — блоки 1-2 -->
+<div class="slide" data-slide="11">
+    <div class="slide-header">
+        <div class="slide-number">CustDev · Скрипт</div>
+        <div class="slide-title">8 вопросов · блоки 1–2</div>
+    </div>
+    <div class="slide-body">
+        <div class="block-question">
+            <div class="block-title">Блок 1 · Контекст</div>
+            <div class="question"><div class="q-num">1</div><div>Расскажите, чем занимаетесь и как давно ведёте занятия? Сколько учеников у вас сейчас?</div></div>
+            <div class="question"><div class="q-num">2</div><div>Как обычно выглядит рабочий день с точки зрения расписания? Проведите по последнему дню.</div></div>
+        </div>
+        <div class="block-question">
+            <div class="block-title">Блок 2 · Проблема</div>
+            <div class="question"><div class="q-num">3</div><div>Вспомните последний раз, когда согласовывали время занятия с учеником. Как это происходило, в каком мессенджере, сколько заняло?</div></div>
+            <div class="question"><div class="q-num">4</div><div>Расскажите про ситуацию, когда произошла накладка в расписании. Что случилось?</div></div>
+        </div>
+    </div>
+</div>
+
+<!-- СЛАЙД 13: Скрипт — блоки 3-5 -->
+<div class="slide" data-slide="12">
+    <div class="slide-header">
+        <div class="slide-number">CustDev · Скрипт</div>
+        <div class="slide-title">8 вопросов · блоки 3–5</div>
+    </div>
+    <div class="slide-body">
+        <div class="block-question">
+            <div class="block-title">Блок 3 · Текущее решение</div>
+            <div class="question"><div class="q-num">5</div><div>Покажите, как сейчас ведёте расписание. Какие приложения, таблицы, каналы используете?</div></div>
+            <div class="question"><div class="q-num">6</div><div>Как ведёте учёт оплат и абонементов? Опишите последний раз, когда сверяли, кто сколько заплатил.</div></div>
+        </div>
+        <div class="block-question">
+            <div class="block-title">Блок 4 · Цена боли</div>
+            <div class="question"><div class="q-num">7</div><div>Сколько времени за последнюю неделю ушло на согласование занятий и учёт оплат? Приведите пример.</div></div>
+        </div>
+        <div class="block-question">
+            <div class="block-title">Блок 5 · Закрытие</div>
+            <div class="question"><div class="q-num">8</div><div>Был ли случай, когда из-за путаницы в расписании или оплатах вы теряли ученика или деньги?</div></div>
+        </div>
+    </div>
+</div>
+
+<!-- СЛАЙД 14: Проведение -->
+<div class="slide" data-slide="13">
+    <div class="slide-header">
+        <div class="slide-number">CustDev · Сбор данных</div>
+        <div class="slide-title">Проведение интервью</div>
+    </div>
+    <div class="slide-body">
+        <div class="respondents-info">
+            <div class="resp-stat">
+                <div class="resp-stat-value">3</div>
+                <div class="resp-stat-label">интервью<br>проведено</div>
+            </div>
+            <div class="resp-stat">
+                <div class="resp-stat-value">~15</div>
+                <div class="resp-stat-label">минут<br>на разговор</div>
+            </div>
+            <div class="resp-stat">
+                <div class="resp-stat-value">100%</div>
+                <div class="resp-stat-label">согласие<br>на запись</div>
+            </div>
+        </div>
+        <div class="card-dark accent-purple">
+            <table class="insights-table" style="margin:0;">
+                <tbody>
+                    <tr>
+                        <td style="width:160px;"><strong style="color:#c4b5fd;">Кто респонденты</strong></td>
+                        <td>Частные репетиторы с 5+ учениками: математика, английский, подготовка к ЕГЭ</td>
+                    </tr>
+                    <tr>
+                        <td><strong style="color:#c4b5fd;">Где нашли</strong></td>
+                        <td>Telegram-чаты репетиторов, ВКонтакте, личные контакты</td>
+                    </tr>
+                    <tr>
+                        <td><strong style="color:#c4b5fd;">Формат</strong></td>
+                        <td>Один исследователь, без пары. Переписка в ВК / Telegram или личная встреча</td>
+                    </tr>
+                    <tr>
+                        <td><strong style="color:#c4b5fd;">Запись</strong></td>
+                        <td>Предупреждение + согласие до старта. Аудио/скриншоты переписки сохранены</td>
+                    </tr>
+                    <tr>
+                        <td><strong style="color:#c4b5fd;">Обезличивание</strong></td>
+                        <td>«Респондент 1», «Респондент 2», «Респондент 3»</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- СЛАЙД 15: Анализ -->
+<div class="slide" data-slide="14">
+    <div class="slide-header">
+        <div class="slide-number">CustDev · Анализ</div>
+        <div class="slide-title">Таблица инсайтов</div>
+    </div>
+    <div class="slide-body">
+        <div class="card-dark accent-purple">
+            <table class="insights-table" style="margin:0;">
+                <thead>
+                    <tr>
+                        <th>Параметр / гипотеза</th>
+                        <th style="width:170px;">Статус</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Ведут расписание в 2+ несвязанных инструментах</td>
+                        <td><span class="status status-confirmed">Подтверждено</span></td>
+                    </tr>
+                    <tr>
+                        <td>Согласование занятия — больше 5 минут переписки</td>
+                        <td><span class="status status-confirmed">Подтверждено</span></td>
+                    </tr>
+                    <tr>
+                        <td>Уже пробовали приложения/боты для расписания</td>
+                        <td><span class="status status-confirmed">Подтверждено</span></td>
+                    </tr>
+                    <tr>
+                        <td>Учёт оплат вручную, бывают ошибки</td>
+                        <td><span class="status status-confirmed">Подтверждено</span></td>
+                    </tr>
+                    <tr>
+                        <td>Основная боль — расписание, а не оплаты</td>
+                        <td><span class="status status-refuted">Опровергнуто</span></td>
+                    </tr>
+                    <tr>
+                        <td>Готовы платить за автоматизацию</td>
+                        <td><span class="status status-unclear">Неясно</span></td>
+                    </tr>
+                </tbody>
+            </table>
+            <div class="honest-note">
+                <strong>Честный CustDev:</strong> есть <strong>опровержение</strong> (боль смещена с расписания на оплаты) и <strong>неясность</strong> (готовность платить) — нужны дополнительные интервью.
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Навигация -->
+<div class="nav">
+    <button class="nav-btn" id="prevBtn" onclick="prevSlide()">‹</button>
+    <div class="nav-dots" id="dots"></div>
+    <div class="slide-counter" id="counter">1 / 15</div>
+    <button class="nav-btn" id="nextBtn" onclick="nextSlide()">›</button>
+</div>
+
+<script>
+    let currentSlide = 0;
+    const totalSlides = document.querySelectorAll('.slide').length;
+    const slides = document.querySelectorAll('.slide');
+    const dotsContainer = document.getElementById('dots');
+    const counter = document.getElementById('counter');
+
+    for (let i = 0; i < totalSlides; i++) {
+        const dot = document.createElement('div');
+        dot.className = 'dot' + (i === 0 ? ' active' : '');
+        dot.onclick = () => goToSlide(i);
+        dotsContainer.appendChild(dot);
+    }
+
+    function updateUI() {
+        slides.forEach((s, i) => s.classList.toggle('active', i === currentSlide));
+        document.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('active', i === currentSlide));
+        counter.textContent = (currentSlide + 1) + ' / ' + totalSlides;
+        document.getElementById('prevBtn').disabled = currentSlide === 0;
+        document.getElementById('nextBtn').disabled = currentSlide === totalSlides - 1;
+    }
+
+    function nextSlide() {
+        if (currentSlide < totalSlides - 1) {
+            currentSlide++;
+            updateUI();
+        }
+    }
+
+    function prevSlide() {
+        if (currentSlide > 0) {
+            currentSlide--;
+            updateUI();
+        }
+    }
+
+    function goToSlide(i) {
+        currentSlide = i;
+        updateUI();
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); nextSlide(); }
+        if (e.key === 'ArrowLeft') { e.preventDefault(); prevSlide(); }
+        if (e.key === 'Home') goToSlide(0);
+        if (e.key === 'End') goToSlide(totalSlides - 1);
+    });
+
+    let touchStartX = 0;
+    document.addEventListener('touchstart', (e) => touchStartX = e.touches[0].clientX);
+    document.addEventListener('touchend', (e) => {
+        const diff = touchStartX - e.changedTouches[0].clientX;
+        if (Math.abs(diff) > 50) {
+            diff > 0 ? nextSlide() : prevSlide();
+        }
+    });
+
+    updateUI();
+</script>
+
+</body>
+</html>
